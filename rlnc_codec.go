@@ -46,12 +46,11 @@ func (c *RLNCCodec) generateCoeffsRow(parityIdx int, k int) []byte {
 	hash := sha256.Sum256(seed)
 
 	for i := 0; i < k; i++ {
-		// Nếu k > 32, ta băm tiếp để có đủ hệ số
+		// Nếu k > 32, băm tiếp để có đủ hệ số
 		if i > 0 && i%32 == 0 {
 			hash = sha256.Sum256(hash[:])
 		}
 		coeffs[i] = hash[i%32]
-		// Tránh hệ số 0 để tăng tính độc lập tuyến tính (tùy chọn)
 		if coeffs[i] == 0 {
 			coeffs[i] = 1
 		}
@@ -91,13 +90,12 @@ func (c *RLNCCodec) gf8MultiplyAdd(dst, src []byte, coeff byte) {
 		if coeff == 0 {
 			continue
 		}
-		// Giả định hàm mulGF8 đã được định nghĩa
 		dst[i] ^= mulGF8(src[i], coeff)
 	}
 }
 
 func (c *RLNCCodec) Decode(data [][]byte) ([][]byte, error) {
-	k := len(data) / 2 // Celestia EDS: k gốc, k parity
+	k := len(data) / 2
 	shareSize := 0
 
 	// 1. Tìm các mảnh hiện có (không nil)

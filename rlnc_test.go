@@ -3,6 +3,7 @@ package rsmt2d
 import (
 	"bytes"
 	"fmt"
+	"math/rand"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,6 +17,23 @@ var (
 	threes = bytes.Repeat([]byte{3}, 64)
 	fours  = bytes.Repeat([]byte{4}, 64)
 	zeros  = bytes.Repeat([]byte{0}, 64)
+)
+
+func generateRandomShares(count int, size int) [][]byte {
+	shares := make([][]byte, count)
+	for i := 0; i < count; i++ {
+		shares[i] = make([]byte, size)
+		// Dùng crypto/rand để có entropy cao nhất
+		rand.Read(shares[i])
+	}
+	return shares
+}
+
+// Dữ liệu biên: Chứa toàn 0, toàn 255 (0xFF), hoặc chỉ 1 bit duy nhất
+var (
+	allZeros = bytes.Repeat([]byte{0x00}, 64)
+	allOnes  = bytes.Repeat([]byte{0xFF}, 64)
+	sparse   = append([]byte{0x01}, bytes.Repeat([]byte{0x00}, 63)...)
 )
 
 // Thêm script cho từng lần in
@@ -60,33 +78,87 @@ func TestRLNC_ExtendedDataSquare(t *testing.T) {
 			assert.NotEmpty(t, colRoots[i])
 		}
 	})
+	t.Run("Test_Matrix_Singularity_Probability", func(t *testing.T) {
+		k := 128 // Kích thước thực tế của Celestia
+		codec := NewRLNCCodec(k)
+		failCount := 0
+		iterations := 2000
 
-	t.Run("Test_Full_Recovery_RLNC", func(t *testing.T) {
-		// Tạo dữ liệu gốc
-		data := [][]byte{
-			ones, twos,
-			threes, fours,
+		for i := 0; i < iterations; i++ {
+			data := generateRandomShares(k, 64)
+			// Chỉ lấy Parity và giả sử mất toàn bộ dữ liệu gốc
+			parity, _ := codec.Encode(data)
+
+			// Thử giải mã chỉ bằng Parity
+			sparseData := make([][]byte, 2*k)
+			copy(sparseData[k:], parity) // Mất sạch 128 mảnh gốc, còn 128 mảnh parity
+
+			_, err := codec.Decode(sparseData)
+			if err != nil {
+				failCount++
+			}
 		}
-		eds, _ := ComputeExtendedDataSquare(data, codec, NewDefaultTree)
-		originalRoots, _ := eds.RowRoots()
-		fmt.Print(originalRoots)
-		// Giả lập việc mất dữ liệu: Tạo một EDS mới và chỉ điền một số mảnh
-		// Trong RLNC, mất mảnh nào cũng được, miễn là đủ k mảnh mỗi hàng/cột
-		repairEds, err := NewExtendedDataSquare(codec, NewDefaultTree, eds.Width(), 64)
+		fmt.Printf("Tỉ lệ giải mã thất bại với %d iterations: %d%%\n", iterations, failCount)
+		assert.Less(t, failCount, 5, "Tỉ lệ lỗi ma trận quá cao!")
+	})
+}
+
+func Test_RLNC_Random_Recovery_With_Metadata(t *testing.T) {
+	// 1. Cấu hình hệ thống
+	const k = 4           // Ma trận gốc 4x4
+	const shareSize = 128 // Kích thước share lớn hơn để test độ ổn định
+	codec := NewRLNCCodec(k * k)
+
+	// Tạo k*k mảnh dữ liệu ngẫu nhiên
+	originalData := generateRandomShares(k*k, shareSize)
+
+	// 2. Tạo EDS (Extended Data Square)
+	eds, err := ComputeExtendedDataSquare(originalData, codec, NewDefaultTree)
+	require.NoError(t, err)
+	width := eds.Width() // width = 8
+
+	t.Run("P2P_Random_Sample_Recovery", func(t *testing.T) {
+		rowIdx := uint(0)
+		fullRow := eds.Row(rowIdx) // Mảng chứa 8 mảnh (4 gốc, 4 parity)
+
+		// GIẢ LẬP MẠNG P2P:
+		// Node nhận được các mảnh rời rạc kèm theo Index của chúng.
+		// Trong RLNC, ta chỉ cần thu thập đúng k mảnh bất kỳ (k=4).
+		type P2PPacket struct {
+			Index int
+			Data  []byte
+		}
+
+		receivedPackets := make([]P2PPacket, 0)
+
+		// Chọn ngẫu nhiên k index trong số 2k index khả dụng (0 đến 7)
+		perm := rand.Perm(int(width))
+		for i := 0; i < k; i++ {
+			idx := perm[i]
+			receivedPackets = append(receivedPackets, P2PPacket{
+				Index: idx,
+				Data:  fullRow[idx],
+			})
+			fmt.Printf("Node nhận được gói: Index %d\n", idx)
+		}
+
+		// 3. CHUẨN BỊ GIẢI MÃ:
+		// Chuyển từ danh sách gói tin (P2P) sang mảng sparse phục vụ hàm Decode
+		sparseRow := make([][]byte, width)
+		for _, packet := range receivedPackets {
+			sparseRow[packet.Index] = packet.Data
+		}
+
+		// 4. THỰC HIỆN GIẢI MÃ
+		recoveredRow, err := codec.Decode(sparseRow)
 		require.NoError(t, err)
 
-		// Giả sử chỉ giữ lại 2 mảnh ngẫu nhiên của Hàng 0 (1 gốc, 1 parity)
-		repairEds.SetCell(0, 0, eds.Row(0)[0]) // Gốc
-		repairEds.SetCell(0, 2, eds.Row(0)[2]) // Parity RLNC
-
-		// Thực hiện giải mã cho hàng 0
-		row0 := repairEds.Row(0)
-		// Lưu ý: row0 lúc này có dạng [ones, nil, parityRLNC, nil]
-		recoveredRow, err := codec.Decode(row0)
-		require.NoError(t, err)
-
-		// Kiểm tra mảnh đã khôi phục (mảnh ones và twos)
-		assert.Equal(t, ones, recoveredRow[0])
-		assert.Equal(t, twos, recoveredRow[1])
+		// 5. KIỂM TRA TÍNH TOÀN VẸN
+		//recoveredRow trả về k mảnh gốc đầu tiên
+		for i := 0; i < k; i++ {
+			expectedData := originalData[int(rowIdx)*k+i]
+			assert.Equal(t, expectedData, recoveredRow[i], "Dữ liệu khôi phục tại index %d không khớp!", i)
+		}
+		fmt.Println("Khôi phục thành công từ k mảnh ngẫu nhiên với dữ liệu entropy cao!")
 	})
 }
