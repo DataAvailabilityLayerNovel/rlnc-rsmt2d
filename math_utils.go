@@ -33,3 +33,29 @@ func invGF8(a byte) byte {
 	}
 	return expTable[255-logTable[a]]
 }
+
+// vectorMulAdd tối ưu hóa: dst ^= src * coeff
+// Sử dụng bảng nhân 256 byte để tránh gọi hàm mulGF8 nhiều lần.
+func vectorMulAdd(dst, src []byte, coeff byte) {
+	if coeff == 0 {
+		return
+	}
+	if coeff == 1 {
+		for i := range dst {
+			dst[i] ^= src[i]
+		}
+		return
+	}
+
+	// Tạo bảng nhân cho hệ số coeff hiện tại
+	// table[x] = x * coeff trong GF(2^8)
+	var mt [256]byte
+	for i := 0; i < 256; i++ {
+		mt[i] = mulGF8(byte(i), coeff)
+	}
+
+	// Vòng lặp này bây giờ cực nhanh vì chỉ có tra bảng và XOR
+	for i := range dst {
+		dst[i] ^= mt[src[i]]
+	}
+}

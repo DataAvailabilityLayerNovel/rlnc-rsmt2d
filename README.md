@@ -1,102 +1,157 @@
 # rsmt2d
 
-Go implementation of [two dimensional Reed-Solomon Merkle tree data availability scheme](https://arxiv.org/abs/1809.09044).
+Triển khai Go cho cơ chế **2D Erasure Coding + Merkle commitments** dùng trong Data Availability (DA).
 
-[![Tests](https://github.com/celestiaorg/rsmt2d/actions/workflows/ci.yml/badge.svg)](https://github.com/celestiaorg/rsmt2d/actions/workflows/ci.yml)
-[![Codecov](https://img.shields.io/codecov/c/github/celestiaorg/rsmt2d)](https://app.codecov.io/gh/celestiaorg/rsmt2d)
-[![GoDoc](https://godoc.org/github.com/celestiaorg/rsmt2d?status.svg)](https://godoc.org/github.com/celestiaorg/rsmt2d)
+Repo này mở rộng data square theo mô hình 2 chiều:
 
-## Example
+- Từ **ODS (Original Data Square)** kích thước `k x k`
+- Thành **EDS (Extended Data Square)** kích thước `2k x 2k`
+- Đồng thời tính Merkle root cho từng hàng/cột để phục vụ kiểm chứng dữ liệu.
 
-```go
-package main
+Hiện có 2 codec:
 
-import (
-    "bytes"
+- `Leopard` (Reed-Solomon từ `github.com/klauspost/reedsolomon`)
+- `RLNC` (Random Linear Network Coding trên `GF(2^8)` với hệ số sinh xác định)
 
-    "github.com/celestiaorg/rsmt2d"
-)
+---
 
-func main() {
-    // shareSize is the size of each share (in bytes).
-    shareSize := 512
-    // Init new codec
-    codec := rsmt2d.NewLeoRSCodec()
+## 1) Cấu trúc repo
 
-    ones := bytes.Repeat([]byte{1}, shareSize)
-    twos := bytes.Repeat([]byte{2}, shareSize)
-    threes := bytes.Repeat([]byte{3}, shareSize)
-    fours := bytes.Repeat([]byte{4}, shareSize)
+- `extendeddatasquare.go`: API chính để tạo/import EDS, mở rộng erasure theo hàng/cột.
+- `extendeddatacrossword.go`: thuật toán `Repair` để khôi phục EDS thiếu mảnh bằng cách lặp solve row/col.
+- `datasquare.go`: cấu trúc lưu trữ square, thao tác row/col, tính root.
+- `tree.go`: `Tree` interface + `DefaultTree` (Merkle tree SHA256).
+- `leopard_codec.go`, `leopard.go`: codec Reed-Solomon (Leopard).
+- `rlnc_codec.go`, `rlnc_core.go`, `math_utils.go`: codec RLNC + Gaussian elimination + phép toán GF(2^8).
+- `*_test.go`: kiểm thử tích hợp và kiểm thử codec.
 
-    // Compute parity shares
-    eds, err := rsmt2d.ComputeExtendedDataSquare(
-        [][]byte{
-            ones, twos,
-            threes, fours,
-        },
-        codec,
-        rsmt2d.NewDefaultTree,
-    )
-    if err != nil {
-        // ComputeExtendedDataSquare failed
-    }
+---
 
-    rowRoots, err := eds.RowRoots()
-    if err != nil {
-    // RowRoots failed
-    }
-    colRoots, err := eds.ColRoots()
-    if err != nil {
-    // ColRoots failed
-    }
+## 2) Luồng hoạt động tổng quát
 
-    flattened := eds.Flattened()
+### Bước A — Encode để tạo EDS
 
-    // Delete some shares, just enough so that repairing is possible.
-    flattened[0], flattened[2], flattened[3] = nil, nil, nil
-    flattened[4], flattened[5], flattened[6], flattened[7] = nil, nil, nil, nil
-    flattened[8], flattened[9], flattened[10] = nil, nil, nil
-    flattened[12], flattened[13] = nil, nil
+1. `ComputeExtendedDataSquare(data, codec, treeFn)` nhận `k²` shares (ODS).
+2. `erasureExtendSquare` mở rộng square thành `2k x 2k` với filler `0`.
+3. Encode theo chiều ngang và dọc:
+   - Q0 (gốc) -> Q1 (parity theo hàng)
+   - Q0 (gốc) -> Q2 (parity theo cột)
+   - Q2 -> Q3 (parity phần còn lại)
+4. Khi cần, tính `RowRoots()` và `ColRoots()` để cam kết dữ liệu.
 
-    // Re-import the data square.
-    eds, err = rsmt2d.ImportExtendedDataSquare(flattened, codec, rsmt2d.NewDefaultTree)
-    if err != nil {
-        // ImportExtendedDataSquare failed
-    }
+### Bước B — Decode/Repair khi thiếu dữ liệu
 
-    // Repair square.
-    err = eds.Repair(
-        rowRoots,
-        colRoots,
-    )
-    if err != nil {
-        // err contains information to construct a fraud proof
-        // See extendeddatacrossword_test.go
-    }
-}
-```
+1. `ImportExtendedDataSquare` nạp lại EDS có thể có `nil` shares.
+2. `Repair(rowRoots, colRoots)` lặp qua từng hàng/cột:
+   - Nếu đủ mảnh thì gọi `codec.Decode` để khôi phục vector đầy đủ (gốc + parity).
+   - Verify lại với root kỳ vọng.
+   - Ghi dữ liệu mới vào EDS.
+3. Dừng khi toàn bộ square hoàn chỉnh hoặc không còn tiến triển (`ErrUnrepairableDataSquare`).
 
-## Contributing
+---
 
-1. [Install Go](https://go.dev/doc/install) 1.24+
-1. [Install golangci-lint](https://golangci-lint.run/usage/install/)
+## 3) Cách các hàm mã hóa hoạt động
 
-### Helpful Commands
+## 3.1 Codec interface
 
-```sh
-# Build the project
+Mọi codec tuân theo interface:
+
+- `Encode(data [][]byte) ([][]byte, error)`
+  - Input: các mảnh gốc (không nil)
+  - Output: chỉ phần parity (k mảnh)
+- `Decode(data [][]byte) ([][]byte, error)`
+  - Input: mảng độ dài `2k` gồm mảnh gốc + parity, mảnh thiếu là `nil`
+  - Output: đầy đủ `2k` mảnh sau khôi phục
+
+## 3.2 Leopard (Reed-Solomon)
+
+File: `leopard.go`
+
+- `Encode`:
+  - Tạo encoder từ cache theo `k` (`loadOrInitEncoder`)
+  - Cấp phát mảng `2k` shares, copy data gốc vào nửa đầu
+  - Gọi `enc.Encode(shares)` để sinh parity vào nửa sau
+- `Decode`:
+  - Gọi `enc.Reconstruct(data)` để khôi phục trực tiếp các share thiếu
+
+Đặc điểm:
+
+- Hiệu năng cao nhờ thư viện tối ưu (SIMD)
+- `ValidateChunkSize`: share size phải chia hết cho 64
+
+## 3.3 RLNC (Random Linear Network Coding)
+
+Các file chính: `rlnc_codec.go`, `rlnc_core.go`, `math_utils.go`
+
+### a) Sinh hệ số parity xác định
+
+- `generateCoeffsRow(parityIdx, k)`:
+  - Seed = `"RLNC" + parityIdx`
+  - Băm SHA256 để tạo dãy hệ số trên `GF(2^8)`
+  - Nếu cần >32 hệ số thì hash tiếp từ hash trước
+  - Thay hệ số `0` bằng `1` để tránh hàng toàn 0
+
+=> Mọi node đều sinh cùng ma trận hệ số cho cùng `k`.
+
+### b) Encode RLNC
+
+- Với mỗi parity share `i`:
+  - Lấy vector hệ số `coeffs`
+  - Tính tổ hợp tuyến tính của tất cả data share:
+    - `parity[i] = Σ(coeffs[j] * data[j])` trên `GF(2^8)`
+  - Dùng `vectorMulAdd(dst, src, coeff)` để tăng tốc (`dst ^= src*coeff`)
+
+Độ phức tạp xấp xỉ: `O(k^2 * shareSize)`.
+
+### c) Decode RLNC
+
+`Decode` thực hiện:
+
+1. Chọn đủ `k` mảnh hiện có từ `2k` input.
+2. Dựng ma trận hệ số `A` kích thước `k x k`:
+   - Nếu là mảnh gốc -> hàng đơn vị
+   - Nếu là parity -> tái sinh đúng hàng hệ số bằng `generateCoeffsRow`
+3. Giải hệ `A * X = B` bằng `solveGaussian` trên `GF(2^8)`:
+   - Chuẩn hóa pivot, khử lên/xuống
+   - `B` là payload bytes của các share
+4. Thu được `X` = các share gốc, sau đó encode lại parity để trả ra đủ `2k`.
+
+Độ phức tạp:
+
+- Phần ma trận: `O(k^3)`
+- Phần xử lý payload khi khử: xấp xỉ `O(k^2 * shareSize)`
+
+Khi `shareSize` lớn, chi phí payload thường chiếm ưu thế.
+
+---
+
+## 4) Chạy dự án
+
+Yêu cầu:
+
+- Go `1.24+`
+
+Lệnh thường dùng:
+
+```bash
 make build
-
-# Run unit tests
 make test
-
-# Run benchmarks
 make bench
-
-# Run linter
 make lint
 ```
 
-## Audits
+Hoặc dùng trực tiếp:
 
-[Informal Systems](https://informal.systems/) audited rsmt2d [v0.9.0](https://github.com/celestiaorg/rsmt2d/releases/tag/v0.9.0) in Q2 of 2023. See [informal-systems.pdf](./audit/informal-systems.pdf).
+```bash
+go test ./...
+```
+
+---
+
+## 5) Gợi ý mở rộng
+
+- Thêm benchmark riêng cho:
+  - `RLNC Encode/Decode`
+  - `Repair` theo nhiều kích thước `k`, `shareSize`
+- Cache ma trận hệ số RLNC theo `(k, parityIdx)` để giảm chi phí hash lặp lại.
+- Cân nhắc tăng tốc khử Gauss bằng kỹ thuật vector hóa/khối nếu tập trung dùng RLNC ở `k` lớn.

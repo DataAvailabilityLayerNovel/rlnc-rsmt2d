@@ -7,47 +7,62 @@ import (
 // solveGaussian: Giải ma trận A * X = B bằng khử Gauss
 // matrix: Ma trận hệ số A (K x K)
 // data: Mảng chứa các share (B), kết quả sẽ được ghi đè vào đây (X)
-func solveGaussian(matrix [][]byte, data [][]byte) ([][]byte, error) {
-	k := len(matrix)
+func solveGaussian(A [][]byte, B [][]byte) ([][]byte, error) {
+	k := len(A)
+	shareSize := len(B[0])
+
 	for i := 0; i < k; i++ {
-		pivotRow := i
+		// 1. Tìm Pivot (phần tử trục)
+		pivot := i
 		for j := i + 1; j < k; j++ {
-			if matrix[j][i] > matrix[pivotRow][i] {
-				pivotRow = j
+			if A[j][i] > A[pivot][i] {
+				pivot = j
 			}
 		}
 
-		matrix[i], matrix[pivotRow] = matrix[pivotRow], matrix[i]
-		data[i], data[pivotRow] = data[pivotRow], data[i]
-
-		if matrix[i][i] == 0 {
-			return nil, fmt.Errorf("ma trận không khả nghịch (không đủ mảnh độc lập)")
+		if A[pivot][i] == 0 {
+			return nil, fmt.Errorf("singular matrix: ma trận không khả nghịch")
 		}
 
-		inv := invGF8(matrix[i][i])
+		// Hoán đổi hàng trong ma trận hệ số và dữ liệu
+		A[i], A[pivot] = A[pivot], A[i]
+		B[i], B[pivot] = B[pivot], B[i]
+
+		// 2. Chuẩn hóa hàng i (Đưa A[i][i] về 1)
+		inv := invGF8(A[i][i])
 		for j := i; j < k; j++ {
-			matrix[i][j] = mulGF8(matrix[i][j], inv)
+			A[i][j] = mulGF8(A[i][j], inv)
 		}
-		for b := 0; b < len(data[i]); b++ {
-			data[i][b] = mulGF8(data[i][b], inv)
+
+		// Tối ưu hóa chuẩn hóa Vector B
+		if inv != 1 {
+			var mt [256]byte
+			for n := 0; n < 256; n++ {
+				mt[n] = mulGF8(byte(n), inv)
+			}
+			for s := 0; s < shareSize; s++ {
+				B[i][s] = mt[B[i][s]]
+			}
 		}
+
+		// 3. Khử các hàng khác (cả trên và dưới i)
 		for j := 0; j < k; j++ {
 			if i != j {
-				factor := matrix[j][i]
-				if factor != 0 {
-					for l := i; l < k; l++ {
-						matrix[j][l] ^= mulGF8(matrix[i][l], factor)
-					}
-					for b := 0; b < len(data[j]); b++ {
-						data[j][b] ^= mulGF8(data[i][b], factor)
-					}
+				factor := A[j][i]
+				if factor == 0 {
+					continue
 				}
+
+				// Cập nhật ma trận hệ số A (chỉ cần từ cột i trở đi)
+				for l := i; l < k; l++ {
+					A[j][l] ^= mulGF8(A[i][l], factor)
+				}
+
+				// Cập nhật dữ liệu B bằng vectorMulAdd đã tối ưu
+				vectorMulAdd(B[j], B[i], factor)
 			}
 		}
 	}
-	res := make([][]byte, k)
-	for i := 0; i < k; i++ {
-		res[i] = data[i]
-	}
-	return res, nil
+
+	return B, nil
 }

@@ -62,27 +62,19 @@ func (c *RLNCCodec) Encode(data [][]byte) ([][]byte, error) {
 	k := len(data)
 	shareSize := len(data[0])
 	parity := make([][]byte, k)
+
 	for i := range parity {
 		parity[i] = make([]byte, shareSize)
-
 		coeffs := c.generateCoeffsRow(i, k)
 
 		for j := 0; j < k; j++ {
-			c.gf8MultiplyAdd(parity[i], data[j], coeffs[j])
+			// Tận dụng hàm vectorMulAdd đã tối ưu
+			if coeffs[j] != 0 {
+				vectorMulAdd(parity[i], data[j], coeffs[j])
+			}
 		}
 	}
 	return parity, nil
-}
-
-func (c *RLNCCodec) gf8MultiplyAdd(dst, src []byte, coeff byte) {
-	// Đây là phép toán: dst = dst XOR (src * coeff) trên GF(2^8)
-	// Trong thực tế, dùng hàm mã hóa của klauspost sẽ nhanh hơn vì có SIMD
-	for i := range src {
-		if coeff == 0 {
-			continue
-		}
-		dst[i] ^= mulGF8(src[i], coeff)
-	}
 }
 
 func (c *RLNCCodec) Decode(data [][]byte) ([][]byte, error) {
