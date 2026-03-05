@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"math/rand"
 )
 
 const RLNC = "RLNC"
@@ -66,19 +65,11 @@ func (c *RLNCCodec) Encode(data [][]byte) ([][]byte, error) {
 	for i := range parity {
 		parity[i] = make([]byte, shareSize)
 
-		// Seed dựa trên index để đảm bảo tính xác định (Deterministic)
-		rng := rand.New(rand.NewSource(int64(i + 1000)))
-		coeffs := make([]byte, k)
-		rng.Read(coeffs)
+		coeffs := c.generateCoeffsRow(i, k)
 
 		for j := 0; j < k; j++ {
 			c.gf8MultiplyAdd(parity[i], data[j], coeffs[j])
 		}
-	}
-	// In data sau khi encode
-	fmt.Println("--- Parity Shares ---")
-	for i, p := range parity {
-		fmt.Printf("Parity %d: %x\n", i, p)
 	}
 	return parity, nil
 }
@@ -127,10 +118,8 @@ func (c *RLNCCodec) Decode(data [][]byte) ([][]byte, error) {
 			// Mảnh gốc: Hệ số là vector đơn vị (1 tại vị trí index)
 			matrixA[i][idx] = 1
 		} else {
-			// Mảnh Parity: Tái tạo hệ số từ Seed (giống hệt lúc Encode)
-			// Lưu ý: i trong Encode tương ứng với (idx - k)
-			rng := rand.New(rand.NewSource(int64((idx - k) + 1000)))
-			rng.Read(matrixA[i])
+			// Mảnh Parity: Tái tạo hệ số giống hệt lúc Encode
+			copy(matrixA[i], c.generateCoeffsRow(idx-k, k))
 		}
 	}
 
@@ -142,5 +131,19 @@ func (c *RLNCCodec) Decode(data [][]byte) ([][]byte, error) {
 		copy(workingData[i], data[availableIndices[i]])
 	}
 
-	return solveGaussian(matrixA, workingData)
+	original, err := solveGaussian(matrixA, workingData)
+	if err != nil {
+		return nil, err
+	}
+
+	parity, err := c.Encode(original)
+	if err != nil {
+		return nil, err
+	}
+
+	decoded := make([][]byte, 2*k)
+	copy(decoded[:k], original)
+	copy(decoded[k:], parity)
+
+	return decoded, nil
 }

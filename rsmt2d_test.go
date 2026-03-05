@@ -19,6 +19,7 @@ func TestEdsRepairRoundtripSimple(t *testing.T) {
 		codec rsmt2d.Codec
 	}{
 		{"leopard", rsmt2d.NewLeoRSCodec()},
+		{"rlnc", rsmt2d.NewRLNCCodec(4)},
 	}
 
 	for _, tt := range tests {
@@ -81,6 +82,7 @@ func TestEdsRepairTwice(t *testing.T) {
 		codec rsmt2d.Codec
 	}{
 		{"leopard", rsmt2d.NewLeoRSCodec()},
+		{"rlnc", rsmt2d.NewRLNCCodec(4)},
 	}
 
 	for _, tt := range tests {
@@ -162,40 +164,52 @@ func TestEdsRepairTwice(t *testing.T) {
 // After the EDS is repaired, the test verifies that data in a repaired cell
 // matches the expected data.
 func TestRepairWithOneQuarterPopulated(t *testing.T) {
-	edsWidth := 4
-	shareSize := 512
+	tests := []struct {
+		name  string
+		codec rsmt2d.Codec
+	}{
+		{"leopard", rsmt2d.NewLeoRSCodec()},
+		{"rlnc", rsmt2d.NewRLNCCodec(4)},
+	}
 
-	exampleEds := createExampleEds(t, shareSize)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			edsWidth := 4
+			shareSize := 512
 
-	eds, err := rsmt2d.NewExtendedDataSquare(rsmt2d.NewLeoRSCodec(), rsmt2d.NewDefaultTree, uint(edsWidth), uint(shareSize))
-	require.NoError(t, err)
+			exampleEds := createExampleEds(t, shareSize, tt.codec)
 
-	// Populate EDS with 1/4 of shares using SetCell
-	err = eds.SetCell(0, 0, exampleEds.GetCell(0, 0))
-	require.NoError(t, err)
-	err = eds.SetCell(0, 1, exampleEds.GetCell(0, 1))
-	require.NoError(t, err)
-	err = eds.SetCell(1, 0, exampleEds.GetCell(1, 0))
-	require.NoError(t, err)
-	err = eds.SetCell(1, 1, exampleEds.GetCell(1, 1))
-	require.NoError(t, err)
+			eds, err := rsmt2d.NewExtendedDataSquare(tt.codec, rsmt2d.NewDefaultTree, uint(edsWidth), uint(shareSize))
+			require.NoError(t, err)
 
-	// Verify that an unpopulated cell returns nil
-	assert.Nil(t, eds.GetCell(3, 3))
+			// Populate EDS with 1/4 of shares using SetCell
+			err = eds.SetCell(0, 0, exampleEds.GetCell(0, 0))
+			require.NoError(t, err)
+			err = eds.SetCell(0, 1, exampleEds.GetCell(0, 1))
+			require.NoError(t, err)
+			err = eds.SetCell(1, 0, exampleEds.GetCell(1, 0))
+			require.NoError(t, err)
+			err = eds.SetCell(1, 1, exampleEds.GetCell(1, 1))
+			require.NoError(t, err)
 
-	rowRoots, err := exampleEds.RowRoots()
-	require.NoError(t, err)
-	colRoots, err := exampleEds.ColRoots()
-	require.NoError(t, err)
+			// Verify that an unpopulated cell returns nil
+			assert.Nil(t, eds.GetCell(3, 3))
 
-	// Repair the EDS
-	err = eds.Repair(rowRoots, colRoots)
-	assert.NoError(t, err)
+			rowRoots, err := exampleEds.RowRoots()
+			require.NoError(t, err)
+			colRoots, err := exampleEds.ColRoots()
+			require.NoError(t, err)
 
-	assert.Equal(t, exampleEds.Flattened(), eds.Flattened())
+			// Repair the EDS
+			err = eds.Repair(rowRoots, colRoots)
+			assert.NoError(t, err)
+
+			assert.Equal(t, exampleEds.Flattened(), eds.Flattened())
+		})
+	}
 }
 
-func createExampleEds(t *testing.T, shareSize int) (eds *rsmt2d.ExtendedDataSquare) {
+func createExampleEds(t *testing.T, shareSize int, codec rsmt2d.Codec) (eds *rsmt2d.ExtendedDataSquare) {
 	ones := bytes.Repeat([]byte{1}, shareSize)
 	twos := bytes.Repeat([]byte{2}, shareSize)
 	threes := bytes.Repeat([]byte{3}, shareSize)
@@ -205,7 +219,7 @@ func createExampleEds(t *testing.T, shareSize int) (eds *rsmt2d.ExtendedDataSqua
 		threes, fours,
 	}
 
-	eds, err := rsmt2d.ComputeExtendedDataSquare(ods, rsmt2d.NewLeoRSCodec(), rsmt2d.NewDefaultTree)
+	eds, err := rsmt2d.ComputeExtendedDataSquare(ods, codec, rsmt2d.NewDefaultTree)
 	require.NoError(t, err)
 	return eds
 }

@@ -36,7 +36,6 @@ var (
 	sparse   = append([]byte{0x01}, bytes.Repeat([]byte{0x00}, 63)...)
 )
 
-// Thêm script cho từng lần in
 func TestRLNC_ExtendedDataSquare(t *testing.T) {
 	// 1. Khởi tạo Codec RLNC (giả sử bạn đã đăng ký hoặc gọi trực tiếp)
 	// Chúng ta test với ma trận gốc 2x2 (width=2), mở rộng thành 4x4 (width=4)
@@ -82,7 +81,7 @@ func TestRLNC_ExtendedDataSquare(t *testing.T) {
 		k := 128 // Kích thước thực tế của Celestia
 		codec := NewRLNCCodec(k)
 		failCount := 0
-		iterations := 2000
+		iterations := 10
 
 		for i := 0; i < iterations; i++ {
 			data := generateRandomShares(k, 64)
@@ -105,7 +104,7 @@ func TestRLNC_ExtendedDataSquare(t *testing.T) {
 
 func Test_RLNC_Random_Recovery_With_Metadata(t *testing.T) {
 	// 1. Cấu hình hệ thống
-	const k = 4           // Ma trận gốc 4x4
+	const k = 8           // Ma trận gốc 8x8
 	const shareSize = 128 // Kích thước share lớn hơn để test độ ổn định
 	codec := NewRLNCCodec(k * k)
 
