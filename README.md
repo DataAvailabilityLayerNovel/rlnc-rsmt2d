@@ -1,6 +1,6 @@
 # rsmt2d
 
-Triển khai Go cho cơ chế **2D Erasure Coding + Merkle commitments** dùng trong Data Availability (DA).
+Chỉnh sửa từ repo rsmt2d của Celestia, triển khai Go cho cơ chế **2D Erasure Coding + Merkle commitments** dùng trong Data Availability (DA).
 
 Repo này mở rộng data square theo mô hình 2 chiều:
 
@@ -155,3 +155,67 @@ go test ./...
   - `Repair` theo nhiều kích thước `k`, `shareSize`
 - Cache ma trận hệ số RLNC theo `(k, parityIdx)` để giảm chi phí hash lặp lại.
 - Cân nhắc tăng tốc khử Gauss bằng kỹ thuật vector hóa/khối nếu tập trung dùng RLNC ở `k` lớn.
+
+---
+
+## 6) Benchmark mẫu cho RLNC Decode
+
+Bạn có thể thêm benchmark vào một file test mới, ví dụ `rlnc_bench_test.go`:
+
+```go
+package rsmt2d
+
+import (
+  "math/rand"
+  "testing"
+)
+
+func benchmarkRLNCDecode(b *testing.B, k int, shareSize int) {
+  codec := NewRLNCCodec(k)
+
+  data := make([][]byte, k)
+  for i := 0; i < k; i++ {
+    data[i] = make([]byte, shareSize)
+    _, _ = rand.Read(data[i])
+  }
+
+  parity, err := codec.Encode(data)
+  if err != nil {
+    b.Fatal(err)
+  }
+
+  b.ResetTimer()
+  for i := 0; i < b.N; i++ {
+    sparse := make([][]byte, 2*k)
+
+    // Giữ lại ~k/2 mảnh gốc và ~k/2 mảnh parity
+    for j := 0; j < k/2; j++ {
+      sparse[j] = data[j]
+    }
+    for j := k / 2; j < k; j++ {
+      sparse[k+j] = parity[j]
+    }
+
+    _, err := codec.Decode(sparse)
+    if err != nil {
+      b.Fatal(err)
+    }
+  }
+}
+
+func BenchmarkRLNCDecodeK32(b *testing.B)  { benchmarkRLNCDecode(b, 32, 512) }
+func BenchmarkRLNCDecodeK64(b *testing.B)  { benchmarkRLNCDecode(b, 64, 512) }
+func BenchmarkRLNCDecodeK128(b *testing.B) { benchmarkRLNCDecode(b, 128, 512) }
+```
+
+Chạy benchmark:
+
+```bash
+go test -run ^$ -bench RLNCDecode -benchmem ./...
+```
+
+Nếu muốn xem rõ xu hướng theo thời gian chạy dài hơn:
+
+```bash
+go test -run ^$ -bench RLNCDecode -benchmem -benchtime=2s ./...
+```
