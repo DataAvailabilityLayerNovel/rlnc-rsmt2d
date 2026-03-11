@@ -3,6 +3,7 @@ package rsmt2d
 // Bảng Log và Exp cho GF(2^8) với đa thức tối giản 0x11d (thường dùng trong AES/Networking)
 var logTable [256]byte
 var expTable [512]byte // Nhân đôi bảng để tránh dùng phép chia lấy dư % 255
+var mulTable [256][256]byte
 
 func init() {
 	var x byte = 1
@@ -18,6 +19,12 @@ func init() {
 		}
 	}
 	logTable[0] = 0 // Log(0) không xác định nhưng gán 0 để tránh crash
+
+	for coeff := 0; coeff < 256; coeff++ {
+		for value := 0; value < 256; value++ {
+			mulTable[coeff][value] = mulGF8(byte(value), byte(coeff))
+		}
+	}
 }
 
 func mulGF8(a, b byte) byte {
@@ -47,12 +54,7 @@ func vectorMulAdd(dst, src []byte, coeff byte) {
 		return
 	}
 
-	// Tạo bảng nhân cho hệ số coeff hiện tại
-	// table[x] = x * coeff trong GF(2^8)
-	var mt [256]byte
-	for i := 0; i < 256; i++ {
-		mt[i] = mulGF8(byte(i), coeff)
-	}
+	mt := &mulTable[coeff]
 
 	// Vòng lặp này bây giờ cực nhanh vì chỉ có tra bảng và XOR
 	for i := range dst {

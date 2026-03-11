@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"sync"
 )
 
 const RLNC = "RLNC"
@@ -12,10 +13,15 @@ var _ Codec = &RLNCCodec{}
 
 type RLNCCodec struct {
 	maxChunks int
+	coeffMu   sync.RWMutex
+	coeffRows map[int][][]byte
 }
 
 func NewRLNCCodec(maxChunks int) Codec {
-	return &RLNCCodec{maxChunks: maxChunks}
+	return &RLNCCodec{
+		maxChunks: maxChunks,
+		coeffRows: make(map[int][][]byte),
+	}
 }
 
 func (c *RLNCCodec) Name() string {
@@ -36,13 +42,21 @@ func (c *RLNCCodec) ValidateChunkSize(chunkSize int) error {
 // generateCoeffsRow tạo ra các hệ số cho một hàng parity dựa trên index của hàng đó.
 // Sử dụng SHA256 để đảm bảo mọi node đều sinh ra cùng một ma trận hệ số.
 func (c *RLNCCodec) generateCoeffsRow(parityIdx int, k int) []byte {
+	c.coeffMu.RLock()
+	if rows, ok := c.coeffRows[k]; ok && parityIdx < len(rows) && rows[parityIdx] != nil {
+		coeffs := rows[parityIdx]
+		c.coeffMu.RUnlock()
+		return coeffs
+	}
+	c.coeffMu.RUnlock()
+
 	coeffs := make([]byte, k)
 	// Seed = "RLNC" + parityIdx (8 bytes)
-	seed := make([]byte, 12)
+	var seed [12]byte
 	copy(seed[:4], "RLNC")
 	binary.LittleEndian.PutUint64(seed[4:], uint64(parityIdx))
 
-	hash := sha256.Sum256(seed)
+	hash := sha256.Sum256(seed[:])
 
 	for i := 0; i < k; i++ {
 		// Nếu k > 32, băm tiếp để có đủ hệ số
@@ -54,6 +68,20 @@ func (c *RLNCCodec) generateCoeffsRow(parityIdx int, k int) []byte {
 			coeffs[i] = 1
 		}
 	}
+
+	c.coeffMu.Lock()
+	rows := c.coeffRows[k]
+	if rows == nil {
+		rows = make([][]byte, k)
+		c.coeffRows[k] = rows
+	}
+	if rows[parityIdx] == nil {
+		rows[parityIdx] = coeffs
+	} else {
+		coeffs = rows[parityIdx]
+	}
+	c.coeffMu.Unlock()
+
 	return coeffs
 }
 
@@ -82,7 +110,7 @@ func (c *RLNCCodec) Decode(data [][]byte) ([][]byte, error) {
 	shareSize := 0
 
 	// 1. Tìm các mảnh hiện có (không nil)
-	availableIndices := make([]int, 0)
+	availableIndices := make([]int, 0, k)
 	for i, d := range data {
 		if d != nil {
 			availableIndices = append(availableIndices, i)

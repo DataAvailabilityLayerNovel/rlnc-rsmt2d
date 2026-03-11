@@ -36,10 +36,7 @@ func solveGaussian(A [][]byte, B [][]byte) ([][]byte, error) {
 
 		// Tối ưu hóa chuẩn hóa Vector B
 		if inv != 1 {
-			var mt [256]byte
-			for n := 0; n < 256; n++ {
-				mt[n] = mulGF8(byte(n), inv)
-			}
+			mt := &mulTable[inv]
 			for s := 0; s < shareSize; s++ {
 				B[i][s] = mt[B[i][s]]
 			}
