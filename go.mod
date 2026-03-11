@@ -1,6 +1,6 @@
 module github.com/celestiaorg/rsmt2d
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/celestiaorg/merkletree v0.0.0-20210714075610-a84dc3ddbbe4
@@ -8,7 +8,7 @@ require (
 	github.com/consensys/gnark-crypto v0.19.2
 	github.com/klauspost/reedsolomon v1.12.5
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/sync v0.17.0
+	golang.org/x/sync v0.20.0
 )
 
 require (
