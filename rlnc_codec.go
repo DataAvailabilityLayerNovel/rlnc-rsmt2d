@@ -1,6 +1,7 @@
 package rsmt2d
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -96,13 +97,30 @@ func (c *RLNCCodec) Encode(data [][]byte) ([][]byte, error) {
 		coeffs := c.generateCoeffsRow(i, k)
 
 		for j := 0; j < k; j++ {
-			// Tận dụng hàm vectorMulAdd đã tối ưu
 			if coeffs[j] != 0 {
 				vectorMulAdd(parity[i], data[j], coeffs[j])
 			}
 		}
 	}
 	return parity, nil
+}
+
+// EncodeSingle tạo ra đúng 1 mảnh Parity tại một tọa độ (r, c) cụ thể.
+// Đây là hàm sẽ được gọi bởi Shrex-Server khi có Request từ mạng RDA.
+func (c *RLNCCodec) EncodeSingle(data [][]byte, parityIdx int) ([]byte, error) {
+	k := len(data)
+	shareSize := len(data[0])
+	piece := make([]byte, shareSize)
+
+	// Tái tạo hệ số xác định cho hàng/cột này
+	coeffs := c.generateCoeffsRow(parityIdx, k)
+
+	for j := 0; j < k; j++ {
+		if coeffs[j] != 0 {
+			vectorMulAdd(piece, data[j], coeffs[j])
+		}
+	}
+	return piece, nil
 }
 
 func (c *RLNCCodec) Decode(data [][]byte) ([][]byte, error) {
@@ -166,4 +184,43 @@ func (c *RLNCCodec) Decode(data [][]byte) ([][]byte, error) {
 	copy(decoded[k:], parity)
 
 	return decoded, nil
+}
+
+// Recode tạo ra một mảnh mã hóa hoàn toàn mới từ các mảnh mã hóa hiện có.
+// pieces: Tập hợp các mảnh RLNC (coded shares) đã nén.
+// oldCoeffs: Ma trận hệ số toàn cục tương ứng của các mảnh đó.
+func (c *RLNCCodec) Recode(pieces [][]byte, oldCoeffs [][]byte) ([]byte, []byte, error) {
+	n := len(pieces)
+	k := c.maxChunks
+	shareSize := len(pieces[0])
+
+	// 1. Sinh ngẫu nhiên thật sự hệ số nội bộ beta
+	beta := make([]byte, n)
+	for i := 0; i < n; i++ {
+		b := make([]byte, 1)
+		_, err := rand.Read(b)
+		if err != nil || b[0] == 0 {
+			beta[i] = 1
+		} else {
+			beta[i] = b[0]
+		}
+	}
+
+	// 2. Tính toán mảnh dữ liệu mới (Recoding)
+	// C_new = sum(beta_i * C_i)
+	newPiece := make([]byte, shareSize)
+	for i := 0; i < n; i++ {
+		vectorMulAdd(newPiece, pieces[i], beta[i])
+	}
+
+	// 3. Cập nhật ma trận hệ số toàn cục mới (Global Coefficients update)
+	// gamma_j = sum(beta_i * alpha_i,j)
+	newGlobalCoeffs := make([]byte, k)
+	for j := 0; j < k; j++ {
+		for i := 0; i < n; i++ {
+			newGlobalCoeffs[j] ^= mulGF8(beta[i], oldCoeffs[i][j])
+		}
+	}
+
+	return newPiece, newGlobalCoeffs, nil
 }
