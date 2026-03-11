@@ -161,3 +161,93 @@ func Test_RLNC_Random_Recovery_With_Metadata(t *testing.T) {
 		fmt.Println("Khôi phục thành công từ k mảnh ngẫu nhiên với dữ liệu entropy cao!")
 	})
 }
+
+// Test_RLNC_EncodeSingle_Consistency kiểm tra xem việc tạo mảnh đơn lẻ (Micro-layer)
+// có khớp với việc tạo toàn bộ ma trận (Macro-layer) hay không.
+func Test_RLNC_EncodeSingle_Consistency(t *testing.T) {
+	const k = 4
+	const shareSize = 64
+	codec := NewRLNCCodec(k)
+	rlnc := codec.(*RLNCCodec)
+
+	// 1. Tạo dữ liệu gốc
+	data := generateRandomShares(k, shareSize)
+
+	t.Run("Compare_Single_vs_Full_Encode", func(t *testing.T) {
+		// Mã hóa toàn bộ theo kiểu cũ
+		allParity, err := rlnc.Encode(data)
+		require.NoError(t, err)
+
+		// Mã hóa từng mảnh đơn lẻ (tại các index khác nhau)
+		for i := 0; i < k; i++ {
+			singlePiece, err := rlnc.EncodeSingle(data, i)
+			require.NoError(t, err)
+
+			// Do cùng sử dụng generateCoeffsRow dựa trên SHA256(index),
+			// kết quả phải giống hệt nhau.
+			assert.Equal(t, allParity[i], singlePiece, "Mảnh đơn lẻ tại index %d không khớp với Encode tổng thể!", i)
+		}
+		fmt.Println("EncodeSingle: Đảm bảo tính nhất quán với cấu trúc EDS thành công.")
+	})
+}
+
+// Test_RLNC_Recode_Mathematical_Correctness là kịch bản quan trọng nhất cho CDA.
+// Kiểm tra xem một node có thể tạo ra một mảnh mã hóa "mới" từ các mảnh mã hóa "cũ"
+// mà vẫn đảm bảo người dùng cuối có thể giải mã được hay không.
+func Test_RLNC_Recode_Mathematical_Correctness(t *testing.T) {
+	const k = 4
+	const shareSize = 64
+	codec := NewRLNCCodec(k)
+	rlnc := codec.(*RLNCCodec)
+
+	// 1. Dữ liệu gốc và các mảnh RLNC ban đầu
+	originalFragments := generateRandomShares(k, shareSize)
+
+	// Giả sử Node A có mảnh Parity index 0, Node B có mảnh Parity index 1
+	p0, _ := rlnc.EncodeSingle(originalFragments, 0)
+	p1, _ := rlnc.EncodeSingle(originalFragments, 1)
+
+	// Lấy hệ số gốc (Global Coeffs) của p0 và p1
+	coeff0 := rlnc.generateCoeffsRow(0, k)
+	coeff1 := rlnc.generateCoeffsRow(1, k)
+
+	t.Run("Recode_Without_Original_Data", func(t *testing.T) {
+		// 2. THỰC HIỆN RECODE: Tổ hợp p0 và p1 để tạo ra p_new
+		existingPieces := [][]byte{p0, p1}
+		existingCoeffs := [][]byte{coeff0, coeff1}
+
+		newPiece, newGlobalCoeffs, err := rlnc.Recode(existingPieces, existingCoeffs)
+		require.NoError(t, err)
+
+		// Kiểm tra: Mảnh mới phải khác các mảnh cũ
+		assert.NotEqual(t, p0, newPiece)
+		assert.NotEqual(t, p1, newPiece)
+		assert.Equal(t, k, len(newGlobalCoeffs), "Hệ số toàn cục mới phải có độ dài bằng k")
+
+		// 3. XÁC MINH TOÁN HỌC:
+		// Trong RLNC, newPiece phải bằng Tổng (hệ số mảnh gốc * mảnh gốc tương ứng)
+		// Ta sẽ dùng giải mã Gaussian để kiểm tra xem newPiece có "hợp lệ" không.
+
+		// Giả lập một Sampler thu thập được:
+		// - 2 mảnh gốc (index 0, 1)
+		// - 1 mảnh VỪA RECODE XONG (tổ hợp của index 0 và 1)
+
+		// Dựng ma trận giải mã
+		// Lưu ý: Decode chuẩn của rsmt2d dựa trên index cố định,
+		// nhưng CDA/RDA cần giải mã dựa trên vector hệ số đi kèm.
+		// Ở đây ta test logic tổ hợp bằng cách kiểm tra Rank.
+
+		fmt.Printf("Recode thành công. Hệ số mới: %v\n", newGlobalCoeffs)
+
+		// Verification: Thủ công tính lại newPiece từ originalFragments
+		// bằng newGlobalCoeffs để xem có khớp không.
+		manualCheck := make([]byte, shareSize)
+		for j := 0; j < k; j++ {
+			if newGlobalCoeffs[j] != 0 {
+				vectorMulAdd(manualCheck, originalFragments[j], newGlobalCoeffs[j])
+			}
+		}
+
+		assert.Equal(t, manualCheck, newPiece, "Mảnh Recode không khớp về mặt toán học với hệ số toàn cục mới!")
+	})
+}

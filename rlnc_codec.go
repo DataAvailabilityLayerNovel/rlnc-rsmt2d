@@ -33,6 +33,13 @@ func (c *RLNCCodec) MaxChunks() int {
 	return c.maxChunks
 }
 
+// GenerateCoeffsRow trả về vector hệ số xác định cho một parity index.
+// Hàm này được export để các package khác (ví dụ cda) có thể tái sử dụng
+// đúng cùng logic sinh hệ số như Encode/Decode.
+func (c *RLNCCodec) GenerateCoeffsRow(parityIdx int, k int) []byte {
+	return c.generateCoeffsRow(parityIdx, k)
+}
+
 func (c *RLNCCodec) ValidateChunkSize(chunkSize int) error {
 	if chunkSize == 0 {
 		return fmt.Errorf("chunk size cannot be zero")
@@ -106,7 +113,6 @@ func (c *RLNCCodec) Encode(data [][]byte) ([][]byte, error) {
 }
 
 // EncodeSingle tạo ra đúng 1 mảnh Parity tại một tọa độ (r, c) cụ thể.
-// Đây là hàm sẽ được gọi bởi Shrex-Server khi có Request từ mạng RDA.
 func (c *RLNCCodec) EncodeSingle(data [][]byte, parityIdx int) ([]byte, error) {
 	k := len(data)
 	shareSize := len(data[0])
