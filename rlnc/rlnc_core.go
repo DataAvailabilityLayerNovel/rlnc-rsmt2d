@@ -1,4 +1,4 @@
-package rsmt2d
+package rlnc
 
 import (
 	"fmt"

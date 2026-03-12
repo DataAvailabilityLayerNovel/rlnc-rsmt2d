@@ -2,6 +2,7 @@ package cda
 
 import (
 	"github.com/celestiaorg/rsmt2d"
+	"github.com/celestiaorg/rsmt2d/rlnc"
 )
 
 // PieceCommitment đại diện cho cam kết KZG của một cột mảnh
@@ -14,20 +15,22 @@ type KZGProvider interface {
 	// Combine thực hiện tổ hợp tuyến tính các cam kết: sum(coeff_i * commit_i)
 	// Đây là tính chất đồng cấu cộng của KZG
 	Combine(commits []PieceCommitment, coeffs []byte) (PieceCommitment, error)
+	// CombineProofs thực hiện tổ hợp tuyến tính các opening proof tại cùng một điểm mở.
+	CombineProofs(proofs []PieceCommitment, coeffs []byte) (PieceCommitment, error)
 	// Verify xác thực một mảnh với cam kết công khai
 	Verify(commit PieceCommitment, row int, data []byte, proof []byte) bool
 }
 
 type CDACommitmentManager struct {
 	kzg   KZGProvider
-	codec rsmt2d.Codec
+	codec rlnc.RLNCCodec
 	k     int
 }
 
 func NewCDACommitmentManager(k int, provider KZGProvider) *CDACommitmentManager {
 	return &CDACommitmentManager{
 		kzg:   provider,
-		codec: rsmt2d.NewRLNCCodec(int(k)),
+		codec: *rlnc.NewRLNCCodec(int(k)),
 		k:     k,
 	}
 }
@@ -81,6 +84,10 @@ func (g *GnarkKZG) Commit(data [][]byte) (PieceCommitment, error) {
 
 func (g *GnarkKZG) Combine(commits []PieceCommitment, coeffs []byte) (PieceCommitment, error) {
 	return g.GnarkCombine(commits, coeffs)
+}
+
+func (g *GnarkKZG) CombineProofs(proofs []PieceCommitment, coeffs []byte) (PieceCommitment, error) {
+	return g.GnarkCombineProofs(proofs, coeffs)
 }
 
 func (g *GnarkKZG) Verify(commit PieceCommitment, row int, data []byte, proof []byte) bool {

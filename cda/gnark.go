@@ -72,6 +72,50 @@ func (g *GnarkKZG) GnarkCombine(commits []PieceCommitment, coeffs []byte) (Piece
 	return combined.Marshal(), nil
 }
 
+// GnarkCombineProofs tổ hợp tuyến tính nhiều opening proof tại cùng một điểm mở.
+func (g *GnarkKZG) GnarkCombineProofs(proofs []PieceCommitment, coeffs []byte) (PieceCommitment, error) {
+	if len(proofs) == 0 {
+		return nil, fmt.Errorf("proofs cannot be empty")
+	}
+	if len(proofs) != len(coeffs) {
+		return nil, fmt.Errorf("coeffs length (%d) does not match proofs length (%d)", len(coeffs), len(proofs))
+	}
+
+	var combinedH bls12381.G1Affine
+	var tempProof kzg.OpeningProof
+	var combinedValue fr.Element
+
+	for i, proofBytes := range proofs {
+		tempProof = kzg.OpeningProof{}
+		if _, err := tempProof.ReadFrom(bytes.NewReader(proofBytes)); err != nil {
+			return nil, err
+		}
+
+		var scalar fr.Element
+		scalar.SetInterface(int64(coeffs[i]))
+
+		var scaledH bls12381.G1Affine
+		scaledH.ScalarMultiplication(&tempProof.H, scalar.BigInt(new(big.Int)))
+		combinedH.Add(&combinedH, &scaledH)
+
+		var scaledValue fr.Element
+		scaledValue.Mul(&tempProof.ClaimedValue, &scalar)
+		combinedValue.Add(&combinedValue, &scaledValue)
+	}
+
+	combinedProof := kzg.OpeningProof{
+		H:            combinedH,
+		ClaimedValue: combinedValue,
+	}
+
+	var out bytes.Buffer
+	if _, err := combinedProof.WriteTo(&out); err != nil {
+		return nil, err
+	}
+
+	return out.Bytes(), nil
+}
+
 // Verify xác thực một mảnh RLNC nhận được qua hàm định đề Pred(h, i, x)
 func (g *GnarkKZG) GnarkVerify(commit PieceCommitment, row int, data []byte, proof []byte) bool {
 	if row < 0 {
@@ -96,6 +140,9 @@ func (g *GnarkKZG) GnarkVerify(commit PieceCommitment, row int, data []byte, pro
 	}
 	openingProof := new(kzg.OpeningProof)
 	if _, err := openingProof.ReadFrom(bytes.NewReader(proof)); err != nil {
+		return false
+	}
+	if !openingProof.ClaimedValue.Equal(&val) {
 		return false
 	}
 	err := kzg.Verify(&digest, openingProof, z, g.srs.Vk)

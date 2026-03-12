@@ -1,4 +1,4 @@
-package rsmt2d
+package rlnc
 
 // Bảng Log và Exp cho GF(2^8) với đa thức tối giản 0x11d (thường dùng trong AES/Networking)
 var logTable [256]byte

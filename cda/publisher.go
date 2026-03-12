@@ -3,102 +3,100 @@ package cda
 import (
 	"fmt"
 
-	r "github.com/celestiaorg/rsmt2d"
+	"github.com/celestiaorg/rsmt2d"
+	"github.com/celestiaorg/rsmt2d/rlnc"
 )
 
 type PublishData struct {
-	CodedData  [][]byte          // Dữ liệu đã RLNC (nén 1/k)
 	ColumnComm []PieceCommitment // N cam kết cho N cột mã hóa [cite: 224]
+	Coeffs     [][]byte          // Hệ số RLNC g_i cho từng cột (để tái tạo cam kết) [cite: 223]
 }
 
-// Tạo Extended Blcok sử dụng Leopard Codec
-func ComputeExtendedDataSquareWithLeopard(data [][]byte) (r.ExtendedDataSquare, error) {
-	eds, err := r.ComputeExtendedDataSquare(data, r.NewLeoRSCodec(), r.NewDefaultTree)
+// ComputeExtendedDataSquareWithLeopard mở rộng khối dữ liệu gốc sử dụng 2D Reed-Solomon [cite: 135, 171]
+func ComputeExtendedDataSquareWithLeopard(data [][]byte) (rsmt2d.ExtendedDataSquare, error) {
+	// Sử dụng Leopard Codec để đảm bảo tính sẵn có của dữ liệu [cite: 171]
+	eds, err := rsmt2d.ComputeExtendedDataSquare(data, rsmt2d.NewLeoRSCodec(), rsmt2d.NewDefaultTree)
 	if err != nil {
-		return r.ExtendedDataSquare{}, err
+		return rsmt2d.ExtendedDataSquare{}, err
 	}
 	return *eds, nil
 }
 
-// ComputeCodedBlockWithRLNC thực hiện "nén" các ô trong EDS bằng RLNC.
-// data: danh sách các share (ô) hiện có trong EDS.
-// k: số lượng phân mảnh nhỏ trong mỗi ô.
-func ComputeCodedBlockWithRLNC(c *r.RLNCCodec, data [][]byte) ([][]byte, error) {
-	numShares := len(data)
-	codedData := make([][]byte, numShares)
-	k := c.MaxChunks()
+// // ComputeCodedBlockWithRLNC thực hiện phân mảnh cell và mã hóa với hệ số xác định [cite: 172-175]
+// func ComputeCodedBlockWithRLNC(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare) ([][]rlnc.PieceData, error) {
+// 	width := int(eds.Width())
+// 	k := codec.MaxChunks()
+// 	codedBlock := make([][]rlnc.PieceData, width)
 
-	for i, share := range data {
-		if share == nil {
-			continue
-		}
+// 	for i := 0; i < width; i++ {
+// 		row := eds.Row(uint(i))
+// 		codedRow := make([]rlnc.PieceData, width)
+// 		for j := 0; j < width; j++ {
+// 			cell := row[j]
+// 			// 1. Chia cell thành k mảnh nhỏ [cite: 172]
+// 			chunkSize := len(cell) / k
+// 			fragments := make([][]byte, k)
+// 			for f := 0; f < k; f++ {
+// 				fragments[f] = cell[f*chunkSize : (f+1)*chunkSize]
+// 			}
 
-		// 1. Phân mảnh tế bào thành k phần bằng nhau
-		chunkSize := len(share) / k
-		fragments := make([][]byte, k)
-		for j := 0; j < k; j++ {
-			fragments[j] = share[j*chunkSize : (j+1)*chunkSize]
-		}
+// 			// 2. Mã hóa RLNC với parityIdx = j (cột j) để đảm bảo tính xác định [cite: 177]
+// 			piece, err := codec.Encode(fragments, j)
+// 			if err != nil {
+// 				return nil, fmt.Errorf("lỗi mã hóa cell [%d,%d]: %w", i, j, err)
+// 			}
+// 			codedRow[j] = piece
+// 		}
+// 		codedBlock[i] = codedRow
+// 	}
+// 	return codedBlock, nil
+// }
 
-		// 2. Sử dụng Single Encode để tạo ra 1 mảnh mã hóa duy nhất cho ô này.
-		// parityIdx ở đây đại diện cho index của ô để sinh hệ số xác định
-		codedPiece, err := c.EncodeSingle(fragments, i)
-		if err != nil {
-			return nil, fmt.Errorf("lỗi mã hóa mảnh %d: %w", i, err)
-		}
-
-		codedData[i] = codedPiece
-	}
-
-	return codedData, nil
-}
-
-// ComputePublishDataCell thực hiện quy trình: Mở rộng -> Phân mảnh & Cam kết -> RLNC & Tổ hợp Cam kết
-func ComputePublishDataCell(codec *r.RLNCCodec, data [][]byte, kzg KZGProvider) (*PublishData, error) {
+// ComputePublishDataCell thực hiện quy trình chuẩn của Publisher trong CDA [cite: 216-225]
+func ComputePublishDataCell(codec *rlnc.RLNCCodec, data [][]byte, kzg KZGProvider) (*PublishData, error) {
 	k := codec.MaxChunks()
-
-	// 1. Mở rộng khối dữ liệu gốc thành EDS NxN sử dụng Leopard [cite: 171]
+	coeffss := make([][]byte, k)
+	// Bước 1: Mở rộng dữ liệu (Macro-layer: 2D Reed-Solomon) [cite: 171]
 	eds, err := ComputeExtendedDataSquareWithLeopard(data)
 	if err != nil {
 		return nil, err
 	}
 	n := int(eds.Width())
 
-	// 2. Tính toán cam kết cho ma trận mảnh (Nk cam kết cột mảnh) [cite: 221, 222]
+	// Bước 2: Tính Nk Piece Commitments (Mỏ neo cho từng mảnh nhỏ) [cite: 221]
+	// Lưu ý: allPieceCommits có độ dài N * k
 	commitManager := NewCDACommitmentManager(k, kzg)
 	allPieceCommits, err := commitManager.CommitEDS(&eds)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3. Thực hiện RLNC để nén các ô trong EDS [cite: 41, 175]
-	// Lấy toàn bộ cell từ EDS để đưa vào hàm nén
-	codedData, err := ComputeCodedBlockWithRLNC(codec, eds.Flattened())
 	if err != nil {
 		return nil, err
 	}
 
-	// 4. Tính toán cam kết đồng cấu cho từng cột mã hóa
+	// Bước 4: Tổ hợp đồng cấu (Homomorphic Combination) [cite: 223-224]
+	// Từ Nk cam kết mảnh, tạo ra N cam kết cột công khai.
 	columnCommits := make([]PieceCommitment, n)
-	for i := 0; i < n; i++ {
-		// Lấy vector hệ số g xác định cho cột i [cite: 174]
-		// Lưu ý: RLNC trong CDA áp dụng cùng một g cho các cell trong cùng cột/siêu cột
-		coeffs := codec.GenerateCoeffsRow(i, k)
+	for col := 0; col < n; col++ {
+		// Lấy vector hệ số g xác định cho cột col
+		coeffs := codec.GenerateCoeffsRow(col, k)
+		coeffss[col] = coeffs
 
-		// Xác định dải cam kết thuộc về siêu cột (supercolumn) này [cite: 219]
-		start := i * k
+		// Lấy dải k cam kết mảnh thuộc về siêu cột (supercolumn) này
+		start := col * k
 		targetPieceCommits := allPieceCommits[start : start+k]
 
-		// Tổ hợp đồng cấu: C_coded = sum(g_j * PieceCommit_j) [cite: 184, 191]
+		// com_coded = sum(g_i * piece_com_i)
 		combined, err := kzg.Combine(targetPieceCommits, coeffs)
 		if err != nil {
-			return nil, fmt.Errorf("lỗi tổ hợp cam kết cột %d: %w", i, err)
+			return nil, fmt.Errorf("lỗi tổ hợp cam kết cột %d: %w", col, err)
 		}
-		columnCommits[i] = combined
+		columnCommits[col] = combined
 	}
 
 	return &PublishData{
-		CodedData:  codedData,
 		ColumnComm: columnCommits,
+		Coeffs:     coeffss,
 	}, nil
 }
