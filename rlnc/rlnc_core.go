@@ -2,6 +2,8 @@ package rlnc
 
 import (
 	"fmt"
+
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 )
 
 // solveGaussian: Giải ma trận A * X = B bằng khử Gauss
@@ -10,6 +12,10 @@ import (
 func solveGaussian(A [][]byte, B [][]byte) ([][]byte, error) {
 	k := len(A)
 	shareSize := len(B[0])
+
+	if shareSize == frSymbolSize {
+		return solveGaussianFr(A, B)
+	}
 
 	for i := 0; i < k; i++ {
 		// 1. Tìm Pivot (phần tử trục)
@@ -59,6 +65,69 @@ func solveGaussian(A [][]byte, B [][]byte) ([][]byte, error) {
 				vectorMulAdd(B[j], B[i], factor)
 			}
 		}
+	}
+
+	return B, nil
+}
+
+func solveGaussianFr(A [][]byte, B [][]byte) ([][]byte, error) {
+	k := len(A)
+
+	a := make([][]fr.Element, k)
+	b := make([]fr.Element, k)
+
+	for i := 0; i < k; i++ {
+		a[i] = make([]fr.Element, k)
+		for j := 0; j < k; j++ {
+			a[i][j].SetUint64(uint64(A[i][j]))
+		}
+		b[i].SetBytes(B[i])
+	}
+
+	for i := 0; i < k; i++ {
+		pivot := -1
+		for j := i; j < k; j++ {
+			if !a[j][i].IsZero() {
+				pivot = j
+				break
+			}
+		}
+		if pivot == -1 {
+			return nil, fmt.Errorf("singular matrix: ma trận không khả nghịch")
+		}
+
+		a[i], a[pivot] = a[pivot], a[i]
+		b[i], b[pivot] = b[pivot], b[i]
+
+		var inv fr.Element
+		inv.Inverse(&a[i][i])
+
+		for j := i; j < k; j++ {
+			a[i][j].Mul(&a[i][j], &inv)
+		}
+		b[i].Mul(&b[i], &inv)
+
+		for j := 0; j < k; j++ {
+			if i == j || a[j][i].IsZero() {
+				continue
+			}
+
+			factor := a[j][i]
+			for l := i; l < k; l++ {
+				var term fr.Element
+				term.Mul(&a[i][l], &factor)
+				a[j][l].Sub(&a[j][l], &term)
+			}
+
+			var bTerm fr.Element
+			bTerm.Mul(&b[i], &factor)
+			b[j].Sub(&b[j], &bTerm)
+		}
+	}
+
+	for i := 0; i < k; i++ {
+		out := b[i].Bytes()
+		copy(B[i], out[:])
 	}
 
 	return B, nil

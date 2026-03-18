@@ -138,7 +138,14 @@ func splitCellIntoFragments(cellData []byte, k int) [][]byte {
 	chunkSize := len(cellData) / k
 	fragments := make([][]byte, k)
 	for i := 0; i < k; i++ {
-		fragments[i] = cellData[i*chunkSize : (i+1)*chunkSize]
+		frag := append([]byte(nil), cellData[i*chunkSize:(i+1)*chunkSize]...)
+		if len(frag) == 32 {
+			var canonical fr.Element
+			canonical.SetBytes(frag)
+			out := canonical.Bytes()
+			copy(frag, out[:])
+		}
+		fragments[i] = frag
 	}
 	return fragments
 }
@@ -444,7 +451,7 @@ func TestGnarkKZG_CombineAndVerifyProof(t *testing.T) {
 	assert.True(t, kzg.Verify(combinedCommit, row, combinedData, combinedProof))
 }
 
-func TestGnarkKZG_StorePieceVerificationFailsWithRLNCGF256(t *testing.T) {
+func TestGnarkKZG_StorePieceVerificationSucceedsWithFrAlignedRLNC(t *testing.T) {
 	const k = 4
 	const cellSize = k * 32
 	const row = 2
@@ -459,7 +466,7 @@ func TestGnarkKZG_StorePieceVerificationFailsWithRLNCGF256(t *testing.T) {
 	require.NoError(t, err)
 
 	recv := NewRecipientManager(k, kzg)
-	assert.False(t, recv.VerifyPiece(*node.MyStoredPiece, pubComm))
+	assert.True(t, recv.VerifyPiece(*node.MyStoredPiece, pubComm))
 }
 
 func TestGnarkKZG_VerifyPiece_FailsOnTamperedData(t *testing.T) {

@@ -2,6 +2,7 @@ package cda
 
 import (
 	"github.com/celestiaorg/rsmt2d/rlnc"
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 )
 
 // StorageNode đại diện cho một nút trong Custody Cell [r, c]
@@ -25,7 +26,15 @@ func (s *StorageNode) HandleStoreFromPublisher(cellData []byte, pieceProofs []Pi
 	chunkSize := len(cellData) / k
 	fragments := make([][]byte, k)
 	for i := 0; i < k; i++ {
-		fragments[i] = cellData[i*chunkSize : (i+1)*chunkSize]
+		frag := append([]byte(nil), cellData[i*chunkSize:(i+1)*chunkSize]...)
+		if len(frag) == 32 {
+			// Chuẩn hóa về biểu diễn phần tử Fr để RLNC path khớp đại số với KZG.
+			var el fr.Element
+			el.SetBytes(frag)
+			bytes := el.Bytes()
+			copy(frag, bytes[:])
+		}
+		fragments[i] = frag
 	}
 
 	// 2. Node tự thực hiện mã hóa RLNC để "nén" dữ liệu
