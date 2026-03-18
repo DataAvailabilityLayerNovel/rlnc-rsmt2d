@@ -350,6 +350,40 @@ func (eds *ExtendedDataSquare) verifyAgainstColRoots(
 	return nil
 }
 
+// verifyColumnCommiment checks that a Commitment is valid for index of the column in EDS. Look up to verifyAgainstCol and RowRoots
+func (eds *ExtendedDataSquare) verifyColumnCommitment(
+	colComm []byte,
+	colIdx uint,
+	columnKZGCommits [][]byte,
+) error {
+	if len(columnKZGCommits) != int(eds.width) {
+		return fmt.Errorf("invalid number of KZG commitments: got %d, want %d", len(columnKZGCommits), eds.width)
+	}
+	if colIdx >= eds.width {
+		return fmt.Errorf("column index out of range: %d", colIdx)
+	}
+
+	commitsWithCandidate := make([][]byte, len(columnKZGCommits))
+	copy(commitsWithCandidate, columnKZGCommits)
+	commitsWithCandidate[colIdx] = colComm
+
+	computedKateRoot, err := eds.KZGColumnMerkleRoot(commitsWithCandidate)
+	if err != nil {
+		return fmt.Errorf("failed to compute kate root for column %d: %w", colIdx, err)
+	}
+
+	storedKateRoot, err := eds.KateRoot()
+	if err != nil {
+		return err
+	}
+
+	if !bytes.Equal(computedKateRoot, storedKateRoot) {
+		return &ErrByzantineData{Col, colIdx, nil}
+	}
+
+	return nil
+}
+
 // preRepairSanityCheck returns an error if any row or column in the EDS is
 // complete and the computed Merkle root for that row or column doesn't match
 // the given root in rowRoots or colRoots.

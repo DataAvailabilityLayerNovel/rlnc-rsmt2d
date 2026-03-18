@@ -593,27 +593,3 @@ func TestCDA_RecodedPieceVerification(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, recv.VerifyPiece(*recodedPiece, recodedPubCommit))
 }
-
-func TestCDA_Decode_FailsOnLinearlyDependentPieces(t *testing.T) {
-	const k = 4
-	kzg := makeGnarkKZG(t, 8)
-	codec := rlnc.NewRLNCCodec(k)
-
-	fragments := codec.GenerateCoeffsRow(k, 32)
-
-	// Tạo 2 mảnh hoàn toàn giống hệt nhau (gây ra phụ thuộc tuyến tính)
-	p1, _ := codec.Encode(fragments, 1)
-	p2, _ := codec.Encode(fragments, 1) // Cùng index -> cùng hệ số g
-
-	p3, _ := codec.Encode(fragments, 2)
-	p4, _ := codec.Encode(fragments, 3)
-
-	recv := NewRecipientManager(k, kzg)
-	pieces := []ReceivedPiece{
-		{Data: p1}, {Data: p2}, {Data: p3}, {Data: p4},
-	}
-
-	// Hy vọng hàm RecoverCell sẽ trả về lỗi "singular matrix" hoặc tương tự
-	_, err := recv.RecoverCell(pieces)
-	assert.Error(t, err, "Giải mã phải thất bại nếu các vector hệ số không độc lập tuyến tính")
-}

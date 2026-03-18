@@ -24,6 +24,7 @@ type dataSquare struct {
 	shareSize    uint
 	rowRoots     [][]byte
 	colRoots     [][]byte
+	kateRoots    [][]byte
 	createTreeFn TreeConstructorFn
 }
 
@@ -197,6 +198,9 @@ func (ds *dataSquare) resetRoots() {
 	}
 	if ds.colRoots != nil {
 		ds.colRoots = nil
+	}
+	if ds.kateRoots != nil {
+		ds.kateRoots = nil
 	}
 }
 

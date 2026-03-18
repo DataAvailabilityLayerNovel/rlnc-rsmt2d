@@ -345,6 +345,58 @@ func (eds *ExtendedDataSquare) Roots() (roots [][]byte, err error) {
 	return roots, nil
 }
 
+// BuildKZGColumnMerkleTree builds a Merkle tree whose leaves are KZG commitments
+// of each column. The number of commitments must match the EDS width.
+func (eds *ExtendedDataSquare) BuildKZGColumnMerkleTree(columnKZGCommits [][]byte) (Tree, error) {
+	if len(columnKZGCommits) != int(eds.Width()) {
+		return nil, fmt.Errorf("invalid number of KZG commitments: got %d, want %d", len(columnKZGCommits), eds.Width())
+	}
+
+	tree := NewDefaultTree(Col, 0)
+	for i, commit := range columnKZGCommits {
+		if len(commit) == 0 {
+			return nil, fmt.Errorf("empty KZG commitment at column %d", i)
+		}
+		if err := tree.Push(commit); err != nil {
+			return nil, err
+		}
+	}
+
+	return tree, nil
+}
+
+// KZGColumnMerkleRoot returns the Merkle root of the tree built from per-column
+// KZG commitments.
+func (eds *ExtendedDataSquare) KZGColumnMerkleRoot(columnKZGCommits [][]byte) ([]byte, error) {
+	tree, err := eds.BuildKZGColumnMerkleTree(columnKZGCommits)
+	if err != nil {
+		return nil, err
+	}
+
+	return tree.Root()
+}
+
+// SetKateRootFromColumnCommitments computes the Merkle root over per-column
+// KZG commitments and stores it in the internal kate root cache.
+func (eds *ExtendedDataSquare) SetKateRootFromColumnCommitments(columnKZGCommits [][]byte) ([]byte, error) {
+	root, err := eds.KZGColumnMerkleRoot(columnKZGCommits)
+	if err != nil {
+		return nil, err
+	}
+
+	eds.kateRoots = [][]byte{append([]byte(nil), root...)}
+	return root, nil
+}
+
+// KateRoot returns the cached Merkle root over per-column KZG commitments.
+func (eds *ExtendedDataSquare) KateRoot() ([]byte, error) {
+	if len(eds.kateRoots) == 0 {
+		return nil, errors.New("kate root is not set")
+	}
+
+	return append([]byte(nil), eds.kateRoots[0]...), nil
+}
+
 // validateEdsWidth returns an error if edsWidth is not a valid width for an
 // extended data square.
 func validateEdsWidth(edsWidth uint) error {
