@@ -27,6 +27,7 @@ RLNC hiện tổ hợp dữ liệu trên `GF(2^8)`, trong khi KZG của `gnark-c
 - recovery của RLNC hoạt động bình thường
 - combine/verify của KZG hoạt động bình thường nếu dữ liệu được tổ hợp trong cùng trường của KZG
 - verify trực tiếp một stored RLNC piece bằng KZG hiện chưa tương thích hoàn toàn về mặt đại số
+  `Đã chuyển trường số RLNC sang Fr tương thích với KZG`
 
 ## Chạy dự án
 
