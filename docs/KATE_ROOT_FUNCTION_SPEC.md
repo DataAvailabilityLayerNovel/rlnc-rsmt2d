@@ -4,7 +4,7 @@
 
 Tai lieu nay mo ta chuc nang da duoc bo sung quanh KZG column commitments va Kate root trong rsmt2d:
 
-- Luu cache kate root trong data square.
+- Luu kate root trong data square.
 - Build Merkle tree tu danh sach commitments theo cot.
 - Tinh root va gan vao EDS.
 - Verify commitment theo index cot dua tren kate root da luu.

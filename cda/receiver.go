@@ -3,7 +3,7 @@ package cda
 import (
 	"fmt"
 
-	"github.com/celestiaorg/rsmt2d/rlnc"
+	rlnc "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
 )
 
 // ReceivedPiece đại diện cho dữ liệu nhận được từ mạng P2P

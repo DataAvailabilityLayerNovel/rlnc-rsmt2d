@@ -1,8 +1,8 @@
 package cda
 
 import (
-	"github.com/celestiaorg/rsmt2d"
-	"github.com/celestiaorg/rsmt2d/rlnc"
+	rsmt2d "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d"
+	rlnc "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
 )
 
 // PieceCommitment đại diện cho cam kết KZG của một cột mảnh

@@ -12,7 +12,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/celestiaorg/rsmt2d/rlnc"
+	rlnc "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 	bls12381kzg "github.com/consensys/gnark-crypto/ecc/bls12-381/kzg"
 	"github.com/stretchr/testify/assert"

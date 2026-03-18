@@ -6,9 +6,9 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/celestiaorg/rsmt2d"
-	"github.com/celestiaorg/rsmt2d/cda"
-	"github.com/celestiaorg/rsmt2d/rlnc"
+	rsmt2d "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d"
+	"github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/cda"
+	"github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
 	bls12381kzg "github.com/consensys/gnark-crypto/ecc/bls12-381/kzg"
 )
 

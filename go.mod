@@ -1,4 +1,4 @@
-module github.com/celestiaorg/rsmt2d
+module github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d
 
 go 1.24.0
 
