@@ -526,3 +526,94 @@ func TestGnarkKZG_RecodePieces_RecoveryOnly(t *testing.T) {
 		assert.Equal(t, fragment, recovered[i])
 	}
 }
+
+func TestCDA_RecodedPieceVerification(t *testing.T) {
+	const k = 4
+	const row = 10
+	const col = 3
+	const cellSize = k * 32
+
+	kzg := makeGnarkKZG(t, 16)
+	recv := NewRecipientManager(k, kzg)
+
+	// 1) Publisher chuẩn bị cell và các mảnh gốc (fragments) theo Fr.
+	cellData := randBytes(cellSize)
+	fragments := splitCellIntoFragments(cellData, k)
+	baseCommits, pieceProofs := makeGnarkFragmentCommitmentsAndProofs(t, kzg, row, fragments)
+
+	// 2) Publisher tạo public commitment cho một coded piece chuẩn với vector g đã biết.
+	publisherCoeffs := []byte{1, 2, 1, 1}
+	publisherData := combineFragmentValuesInScalarField(fragments, publisherCoeffs)
+	publisherProof, err := kzg.CombineProofs(pieceProofs, publisherCoeffs)
+	require.NoError(t, err)
+	publisherCommit, err := kzg.Combine(baseCommits, publisherCoeffs)
+	require.NoError(t, err)
+
+	// Sanity: coded piece chuẩn của publisher phải verify với pub commitment của chính nó.
+	publisherPiece := ReceivedPiece{
+		Row: row,
+		Col: col,
+		Data: rlnc.PieceData{
+			Data:   append([]byte(nil), publisherData...),
+			Coeffs: append([]byte(nil), publisherCoeffs...),
+		},
+		Proof: publisherProof,
+	}
+	assert.True(t, recv.VerifyPiece(publisherPiece, publisherCommit))
+
+	// 3) Giả lập 2 node đã có piece hợp lệ từ Publisher cho cùng cell (r, c).
+	nodePieceA := ReceivedPiece{
+		Row: row,
+		Col: col,
+		Data: rlnc.PieceData{
+			Data:   append([]byte(nil), publisherPiece.Data.Data...),
+			Coeffs: append([]byte(nil), publisherPiece.Data.Coeffs...),
+		},
+		Proof: append([]byte(nil), publisherPiece.Proof...),
+	}
+	nodePieceB := ReceivedPiece{
+		Row: row,
+		Col: col,
+		Data: rlnc.PieceData{
+			Data:   append([]byte(nil), publisherPiece.Data.Data...),
+			Coeffs: append([]byte(nil), publisherPiece.Data.Coeffs...),
+		},
+		Proof: append([]byte(nil), publisherPiece.Proof...),
+	}
+
+	// 4) Peer-to-peer recoding tạo piece mới với beta nội bộ ngẫu nhiên.
+	recodedPiece, err := recv.RecodePieces([]ReceivedPiece{nodePieceA, nodePieceB})
+	require.NoError(t, err)
+	require.NotNil(t, recodedPiece)
+	require.NotEmpty(t, recodedPiece.Proof)
+
+	// 5) Verify quan trọng: recoded piece verify được bằng commitment tái tổ hợp
+	// từ cùng bộ anchor commitments do Publisher tạo ban đầu.
+	recodedPubCommit, err := kzg.Combine(baseCommits, recodedPiece.Data.Coeffs)
+	require.NoError(t, err)
+	assert.True(t, recv.VerifyPiece(*recodedPiece, recodedPubCommit))
+}
+
+func TestCDA_Decode_FailsOnLinearlyDependentPieces(t *testing.T) {
+	const k = 4
+	kzg := makeGnarkKZG(t, 8)
+	codec := rlnc.NewRLNCCodec(k)
+
+	fragments := codec.GenerateCoeffsRow(k, 32)
+
+	// Tạo 2 mảnh hoàn toàn giống hệt nhau (gây ra phụ thuộc tuyến tính)
+	p1, _ := codec.Encode(fragments, 1)
+	p2, _ := codec.Encode(fragments, 1) // Cùng index -> cùng hệ số g
+
+	p3, _ := codec.Encode(fragments, 2)
+	p4, _ := codec.Encode(fragments, 3)
+
+	recv := NewRecipientManager(k, kzg)
+	pieces := []ReceivedPiece{
+		{Data: p1}, {Data: p2}, {Data: p3}, {Data: p4},
+	}
+
+	// Hy vọng hàm RecoverCell sẽ trả về lỗi "singular matrix" hoặc tương tự
+	_, err := recv.RecoverCell(pieces)
+	assert.Error(t, err, "Giải mã phải thất bại nếu các vector hệ số không độc lập tuyến tính")
+}
