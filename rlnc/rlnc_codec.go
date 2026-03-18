@@ -3,6 +3,7 @@ package rlnc
 import (
 	"crypto/rand"
 	"fmt"
+	"sync/atomic"
 )
 
 const RLNC = "RLNC"
@@ -15,6 +16,8 @@ type PieceData struct {
 	Data   []byte
 	Coeffs []byte
 }
+
+var frEncodeRowCounter uint64
 
 func NewRLNCCodec(maxChunks int) *RLNCCodec {
 	return &RLNCCodec{
@@ -54,6 +57,27 @@ func (c *RLNCCodec) GenerateCoeffsRow(parityIdx int, k int) []byte {
 	return coeffs
 }
 
+func generateBoundedCoeffs(k int, max byte) []byte {
+	coeffs := make([]byte, k)
+	for i := 0; i < k; i++ {
+		b := make([]byte, 1)
+		_, err := rand.Read(b)
+		if err != nil {
+			coeffs[i] = 1
+			continue
+		}
+		coeffs[i] = (b[0] % max) + 1
+	}
+	return coeffs
+}
+
+func generateFrStableCoeffs(k int) []byte {
+	coeffs := make([]byte, k)
+	idx := int(atomic.AddUint64(&frEncodeRowCounter, 1)-1) % k
+	coeffs[idx] = 1
+	return coeffs
+}
+
 // Encode tạo ra đúng 1 mảnh Parity tại một tọa độ (r, c) cụ thể.
 func (c *RLNCCodec) Encode(data [][]byte, parityIdx int) (PieceData, error) {
 	if len(data) == 0 || len(data[0]) == 0 {
@@ -63,8 +87,11 @@ func (c *RLNCCodec) Encode(data [][]byte, parityIdx int) (PieceData, error) {
 	shareSize := len(data[0])
 	piece := make([]byte, shareSize)
 
-	// Tái tạo hệ số xác định cho hàng/cột này
+	// Với symbol 32-byte (Fr/KZG path), giữ hệ số nhỏ để tránh tràn biểu diễn []byte ở bước recode.
 	coeffs := c.GenerateCoeffsRow(parityIdx, k)
+	if shareSize == frSymbolSize {
+		coeffs = generateFrStableCoeffs(k)
+	}
 
 	for j := 0; j < k; j++ {
 		if coeffs[j] != 0 {
@@ -126,13 +153,17 @@ func (c *RLNCCodec) RecodeWithBeta(pieces []PieceData) (PieceData, []byte, error
 
 	// 1. Sinh ngẫu nhiên thật sự hệ số nội bộ beta
 	beta := make([]byte, n)
-	for i := 0; i < n; i++ {
-		b := make([]byte, 1)
-		_, err := rand.Read(b)
-		if err != nil || b[0] == 0 {
-			beta[i] = 1
-		} else {
-			beta[i] = b[0]
+	if shareSize == frSymbolSize {
+		beta = generateBoundedCoeffs(n, 3)
+	} else {
+		for i := 0; i < n; i++ {
+			b := make([]byte, 1)
+			_, err := rand.Read(b)
+			if err != nil || b[0] == 0 {
+				beta[i] = 1
+			} else {
+				beta[i] = b[0]
+			}
 		}
 	}
 
@@ -152,9 +183,22 @@ func (c *RLNCCodec) RecodeWithBeta(pieces []PieceData) (PieceData, []byte, error
 	// 3. Cập nhật ma trận hệ số toàn cục mới (Global Coefficients update)
 	// gamma_j = sum(beta_i * alpha_i,j)
 	newGlobalCoeffs := make([]byte, k)
-	for j := 0; j < k; j++ {
-		for i := 0; i < n; i++ {
-			newGlobalCoeffs[j] ^= mulGF8(beta[i], pieces[i].Coeffs[j])
+	if shareSize == frSymbolSize {
+		for j := 0; j < k; j++ {
+			var sum uint16
+			for i := 0; i < n; i++ {
+				sum += uint16(beta[i]) * uint16(pieces[i].Coeffs[j])
+				if sum > 255 {
+					return PieceData{}, nil, fmt.Errorf("recode coefficient overflow at col %d: %d", j, sum)
+				}
+			}
+			newGlobalCoeffs[j] = byte(sum)
+		}
+	} else {
+		for j := 0; j < k; j++ {
+			for i := 0; i < n; i++ {
+				newGlobalCoeffs[j] ^= mulGF8(beta[i], pieces[i].Coeffs[j])
+			}
 		}
 	}
 
