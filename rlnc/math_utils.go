@@ -1,5 +1,9 @@
 package rlnc
 
+import "github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
+
+const frSymbolSize = 32
+
 // Bảng Log và Exp cho GF(2^8) với đa thức tối giản 0x11d (thường dùng trong AES/Networking)
 var logTable [256]byte
 var expTable [512]byte // Nhân đôi bảng để tránh dùng phép chia lấy dư % 255
@@ -44,6 +48,11 @@ func invGF8(a byte) byte {
 // vectorMulAdd tối ưu hóa: dst ^= src * coeff
 // Sử dụng bảng nhân 256 byte để tránh gọi hàm mulGF8 nhiều lần.
 func vectorMulAdd(dst, src []byte, coeff byte) {
+	if len(dst) == frSymbolSize && len(src) == frSymbolSize {
+		vectorMulAddFr(dst, src, coeff)
+		return
+	}
+
 	if coeff == 0 {
 		return
 	}
@@ -60,4 +69,27 @@ func vectorMulAdd(dst, src []byte, coeff byte) {
 	for i := range dst {
 		dst[i] ^= mt[src[i]]
 	}
+}
+
+// vectorMulAddFr thực hiện dst = dst + coeff*src trên trường Fr (BLS12-381 scalar field).
+// Hàm này dùng cho các symbol 32-byte để tương thích đại số với KZG.
+func vectorMulAddFr(dst, src []byte, coeff byte) {
+	if coeff == 0 {
+		return
+	}
+
+	var dstEl fr.Element
+	var srcEl fr.Element
+	var coeffEl fr.Element
+	var term fr.Element
+
+	dstEl.SetBytes(dst)
+	srcEl.SetBytes(src)
+	coeffEl.SetUint64(uint64(coeff))
+
+	term.Mul(&srcEl, &coeffEl)
+	dstEl.Add(&dstEl, &term)
+
+	out := dstEl.Bytes()
+	copy(dst, out[:])
 }
