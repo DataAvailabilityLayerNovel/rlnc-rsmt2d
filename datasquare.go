@@ -26,6 +26,13 @@ type dataSquare struct {
 	colRoots     [][]byte
 	kateRoots    [][]byte
 	createTreeFn TreeConstructorFn
+	// parallelOps number of parallel operations when computing root
+	parallelOps int
+}
+
+// getWidth returns the min width of the square which can fit the given data
+func getWidth(data [][]byte) int {
+	return int(math.Ceil(math.Sqrt(float64(len(data)))))
 }
 
 // newDataSquare populates the data square from the supplied data and treeCreator.
@@ -202,6 +209,12 @@ func (ds *dataSquare) resetRoots() {
 	if ds.kateRoots != nil {
 		ds.kateRoots = nil
 	}
+}
+
+// setParallelOps sets the number of parallel operations when computing the root,
+// if the number is 0, the number of operations is not limited.
+func (ds *dataSquare) setParallelOps(ops int) {
+	ds.parallelOps = ops
 }
 
 func (ds *dataSquare) computeRoots() error {
