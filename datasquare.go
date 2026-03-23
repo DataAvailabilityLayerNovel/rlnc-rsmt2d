@@ -17,18 +17,22 @@ var ErrUnevenChunks = errors.New("non-nil shares not all of equal size")
 // data square (EDS). Data is duplicated in both row-major and column-major
 // order in order to be able to provide zero-allocation column slices.
 type dataSquare struct {
-	squareRow    [][][]byte // row-major
-	squareCol    [][][]byte // col-major
-	dataMutex    sync.Mutex
-	width        uint
-	shareSize    uint
-	rowRoots     [][]byte
-	colRoots     [][]byte
-	kateRoots    [][]byte
-	createTreeFn TreeConstructorFn
+	squareRow       [][][]byte // row-major
+	squareCol       [][][]byte // col-major
+	dataMutex       sync.Mutex
+	width           uint
+	shareSize       uint
+	rowRoots        [][]byte
+	colRoots        [][]byte
+	kateRoots       [][]byte
+	createTreeFn    TreeConstructorFn
+	createKateColFn KateColumnCommitmentFn
 	// parallelOps number of parallel operations when computing root
 	parallelOps int
 }
+
+// KateColumnCommitmentFn computes the commitment for one data square column.
+type KateColumnCommitmentFn func(col [][]byte, colIdx uint) ([]byte, error)
 
 // getWidth returns the min width of the square which can fit the given data
 func getWidth(data [][]byte) int {
@@ -217,11 +221,19 @@ func (ds *dataSquare) setParallelOps(ops int) {
 	ds.parallelOps = ops
 }
 
+// setKateColumnCommitmentFn configures a custom function to compute
+// per-column KZG commitments.
+func (ds *dataSquare) setKateColumnCommitmentFn(fn KateColumnCommitmentFn) {
+	ds.createKateColFn = fn
+	ds.resetRoots()
+}
+
 func (ds *dataSquare) computeRoots() error {
 	var g errgroup.Group
 
 	rowRoots := make([][]byte, ds.width)
 	colRoots := make([][]byte, ds.width)
+	kateRoots := make([][]byte, ds.width)
 
 	for i := uint(0); i < ds.width; i++ {
 		i := i // https://go.dev/doc/faq#closures_and_goroutines
@@ -242,6 +254,15 @@ func (ds *dataSquare) computeRoots() error {
 			colRoots[i] = colRoot
 			return nil
 		})
+
+		g.Go(func() error {
+			kateRoot, err := ds.getKateCol(i)
+			if err != nil {
+				return err
+			}
+			kateRoots[i] = kateRoot
+			return nil
+		})
 	}
 
 	err := g.Wait()
@@ -251,6 +272,7 @@ func (ds *dataSquare) computeRoots() error {
 
 	ds.rowRoots = rowRoots
 	ds.colRoots = colRoots
+	ds.kateRoots = kateRoots
 	return nil
 }
 
@@ -314,6 +336,48 @@ func (ds *dataSquare) getColRoot(colIdx uint) ([]byte, error) {
 	if !isComplete(col) {
 		return nil, errors.New("can not compute root of incomplete column")
 	}
+	for _, d := range col {
+		err := tree.Push(d)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return tree.Root()
+}
+
+// getKateRoots returns all cached per-column KZG commitments in the square.
+func (ds *dataSquare) getKateRoots() ([][]byte, error) {
+	if ds.kateRoots == nil {
+		err := ds.computeRoots()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return ds.kateRoots, nil
+}
+
+// getKateCol calculates and returns the KZG commitment of the selected column.
+// Note: unlike getKateRoots, getKateCol does not write to the built-in cache.
+// Returns an error if the column is incomplete (i.e. some shares are nil).
+func (ds *dataSquare) getKateCol(colIdx uint) ([]byte, error) {
+	if ds.kateRoots != nil {
+		return ds.kateRoots[colIdx], nil
+	}
+
+	col := ds.col(colIdx)
+	if !isComplete(col) {
+		return nil, errors.New("can not compute root of incomplete column")
+	}
+
+	if ds.createKateColFn != nil {
+		return ds.createKateColFn(col, colIdx)
+	}
+
+	// Backward-compatible fallback: use Merkle commitment of column cells when no
+	// KZG commitment function is configured.
+	tree := ds.createTreeFn(Col, colIdx)
 	for _, d := range col {
 		err := tree.Push(d)
 		if err != nil {

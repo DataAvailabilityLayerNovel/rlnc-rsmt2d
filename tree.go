@@ -57,3 +57,4 @@ func (d *DefaultTree) Root() ([]byte, error) {
 	}
 	return d.root, nil
 }
+

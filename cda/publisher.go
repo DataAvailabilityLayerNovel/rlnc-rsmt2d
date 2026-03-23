@@ -12,6 +12,40 @@ type PublishData struct {
 	Coeffs     [][]byte          // Hệ số RLNC g_i cho từng cột (để tái tạo cam kết) [cite: 223]
 }
 
+// BuildColumnCommitmentFnFromPublisher creates a callback that computes the
+// KZG commitment for each EDS column using publisher logic.
+func BuildColumnCommitmentFnFromPublisher(
+	codec *rlnc.RLNCCodec,
+	eds *rsmt2d.ExtendedDataSquare,
+	kzg KZGProvider,
+) (rsmt2d.KateColumnCommitmentFn, error) {
+	k := codec.MaxChunks()
+	n := int(eds.Width())
+
+	commitManager := NewCDACommitmentManager(k, kzg)
+	allPieceCommits, err := commitManager.CommitEDS(eds)
+	if err != nil {
+		return nil, err
+	}
+
+	return func(_ [][]byte, colIdx uint) ([]byte, error) {
+		if int(colIdx) >= n {
+			return nil, fmt.Errorf("column index out of range: %d", colIdx)
+		}
+
+		coeffs := codec.GenerateCoeffsRow(int(colIdx), k)
+		start := int(colIdx) * k
+		targetPieceCommits := allPieceCommits[start : start+k]
+
+		combined, err := kzg.Combine(targetPieceCommits, coeffs)
+		if err != nil {
+			return nil, fmt.Errorf("lỗi tổ hợp cam kết cột %d: %w", colIdx, err)
+		}
+
+		return append([]byte(nil), combined...), nil
+	}, nil
+}
+
 // ComputeExtendedDataSquareWithLeopard mở rộng khối dữ liệu gốc sử dụng 2D Reed-Solomon [cite: 135, 171]
 func ComputeExtendedDataSquareWithLeopard(data [][]byte) (rsmt2d.ExtendedDataSquare, error) {
 	// Sử dụng Leopard Codec để đảm bảo tính sẵn có của dữ liệu [cite: 171]
