@@ -24,7 +24,9 @@ type dataSquare struct {
 	shareSize       uint
 	rowRoots        [][]byte
 	colRoots        [][]byte
-	kateRoots       [][]byte
+	katePieceList   [][]byte
+	kateList        [][]byte
+	kateRoot        []byte
 	createTreeFn    TreeConstructorFn
 	createKateColFn KateColumnCommitmentFn
 	// parallelOps number of parallel operations when computing root
@@ -210,8 +212,14 @@ func (ds *dataSquare) resetRoots() {
 	if ds.colRoots != nil {
 		ds.colRoots = nil
 	}
-	if ds.kateRoots != nil {
-		ds.kateRoots = nil
+	if ds.kateRoot != nil {
+		ds.kateRoot = nil
+	}
+	if ds.kateList != nil {
+		ds.kateList = nil
+	}
+	if ds.katePieceList != nil {
+		ds.katePieceList = nil
 	}
 }
 
@@ -221,11 +229,24 @@ func (ds *dataSquare) setParallelOps(ops int) {
 	ds.parallelOps = ops
 }
 
-// setKateColumnCommitmentFn configures a custom function to compute
-// per-column KZG commitments.
+// setKateColumnCommitmentFn configures a custom function to compute per-column commitments.
 func (ds *dataSquare) setKateColumnCommitmentFn(fn KateColumnCommitmentFn) {
 	ds.createKateColFn = fn
-	ds.resetRoots()
+	if ds.kateList != nil {
+		ds.kateList = nil
+	}
+	if ds.kateRoot != nil {
+		ds.kateRoot = nil
+	}
+}
+
+func (ds *dataSquare) setKatePieceList(pieceCommits [][]byte) {
+	ds.katePieceList = deepCopy(pieceCommits)
+}
+
+func (ds *dataSquare) setKateList(colCommits [][]byte) {
+	ds.kateList = deepCopy(colCommits)
+	ds.kateRoot = nil
 }
 
 func (ds *dataSquare) computeRoots() error {
@@ -233,7 +254,11 @@ func (ds *dataSquare) computeRoots() error {
 
 	rowRoots := make([][]byte, ds.width)
 	colRoots := make([][]byte, ds.width)
-	kateRoots := make([][]byte, ds.width)
+	computeKate := ds.kateList == nil && ds.createKateColFn != nil
+	var kateList [][]byte
+	if computeKate {
+		kateList = make([][]byte, ds.width)
+	}
 
 	for i := uint(0); i < ds.width; i++ {
 		i := i // https://go.dev/doc/faq#closures_and_goroutines
@@ -255,14 +280,16 @@ func (ds *dataSquare) computeRoots() error {
 			return nil
 		})
 
-		g.Go(func() error {
-			kateRoot, err := ds.getKateCol(i)
-			if err != nil {
-				return err
-			}
-			kateRoots[i] = kateRoot
-			return nil
-		})
+		if computeKate {
+			g.Go(func() error {
+				kateCol, err := ds.getKateCol(i)
+				if err != nil {
+					return err
+				}
+				kateList[i] = kateCol
+				return nil
+			})
+		}
 	}
 
 	err := g.Wait()
@@ -272,7 +299,10 @@ func (ds *dataSquare) computeRoots() error {
 
 	ds.rowRoots = rowRoots
 	ds.colRoots = colRoots
-	ds.kateRoots = kateRoots
+	if computeKate {
+		ds.kateList = kateList
+		ds.kateRoot = nil
+	}
 	return nil
 }
 
@@ -346,24 +376,25 @@ func (ds *dataSquare) getColRoot(colIdx uint) ([]byte, error) {
 	return tree.Root()
 }
 
-// getKateRoots returns all cached per-column KZG commitments in the square.
+// getKateRoots returns all cached per-column commitments in the square.
 func (ds *dataSquare) getKateRoots() ([][]byte, error) {
-	if ds.kateRoots == nil {
+	if ds.kateList == nil {
+		if ds.createKateColFn == nil {
+			return nil, errors.New("kate column commitment function is not configured")
+		}
 		err := ds.computeRoots()
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	return ds.kateRoots, nil
+	return ds.kateList, nil
 }
 
-// getKateCol calculates and returns the KZG commitment of the selected column.
-// Note: unlike getKateRoots, getKateCol does not write to the built-in cache.
-// Returns an error if the column is incomplete (i.e. some shares are nil).
+// getKateCol calculates and returns the commitment of the selected column.
 func (ds *dataSquare) getKateCol(colIdx uint) ([]byte, error) {
-	if ds.kateRoots != nil {
-		return ds.kateRoots[colIdx], nil
+	if ds.kateList != nil {
+		return ds.kateList[colIdx], nil
 	}
 
 	col := ds.col(colIdx)
@@ -375,17 +406,7 @@ func (ds *dataSquare) getKateCol(colIdx uint) ([]byte, error) {
 		return ds.createKateColFn(col, colIdx)
 	}
 
-	// Backward-compatible fallback: use Merkle commitment of column cells when no
-	// KZG commitment function is configured.
-	tree := ds.createTreeFn(Col, colIdx)
-	for _, d := range col {
-		err := tree.Push(d)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return tree.Root()
+	return nil, errors.New("kate column commitment function is not configured")
 }
 
 // GetCell returns a copy of a specific cell.

@@ -1,29 +1,43 @@
 package cda
 
 import (
+	"bytes"
 	"fmt"
 
 	rsmt2d "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d"
 	rlnc "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
+	bls12381kzg "github.com/consensys/gnark-crypto/ecc/bls12-381/kzg"
 )
 
 type PublishData struct {
-	ColumnComm []PieceCommitment // N cam kết cho N cột mã hóa [cite: 224]
-	Coeffs     [][]byte          // Hệ số RLNC g_i cho từng cột (để tái tạo cam kết) [cite: 223]
+	OpenProofCells [][]byte          // N*N*k open proof cells để chứng minh dữ liệu đã được cam kết.
+	PieceComm      []PieceCommitment // N*k cam kết cho N*k cột mảnh
+	ColumnComm     []PieceCommitment // N cam kết cho N cột mã hóa [cite: 224]
+	Coeffs         [][]byte          // Hệ số RLNC g_i cho từng cột (để tái tạo cam kết) [cite: 223]
 }
 
-// BuildColumnCommitmentFnFromPublisher creates a callback that computes the
-// KZG commitment for each EDS column using publisher logic.
+// BuildColumnCommitmentFnFromPublisher builds a callback that combines k piece
+// commitments into one commitment for each EDS column.
 func BuildColumnCommitmentFnFromPublisher(
 	codec *rlnc.RLNCCodec,
 	eds *rsmt2d.ExtendedDataSquare,
 	kzg KZGProvider,
 ) (rsmt2d.KateColumnCommitmentFn, error) {
+	if codec == nil {
+		return nil, fmt.Errorf("codec is nil")
+	}
+	if eds == nil {
+		return nil, fmt.Errorf("eds is nil")
+	}
+	if kzg == nil {
+		return nil, fmt.Errorf("kzg provider is nil")
+	}
+
 	k := codec.MaxChunks()
 	n := int(eds.Width())
-
 	commitManager := NewCDACommitmentManager(k, kzg)
-	allPieceCommits, err := commitManager.CommitEDS(eds)
+	pieceCommits, err := commitManager.CommitEDS(eds)
 	if err != nil {
 		return nil, err
 	}
@@ -32,16 +46,12 @@ func BuildColumnCommitmentFnFromPublisher(
 		if int(colIdx) >= n {
 			return nil, fmt.Errorf("column index out of range: %d", colIdx)
 		}
-
 		coeffs := codec.GenerateCoeffsRow(int(colIdx), k)
 		start := int(colIdx) * k
-		targetPieceCommits := allPieceCommits[start : start+k]
-
-		combined, err := kzg.Combine(targetPieceCommits, coeffs)
+		combined, err := kzg.Combine(pieceCommits[start:start+k], coeffs)
 		if err != nil {
-			return nil, fmt.Errorf("lỗi tổ hợp cam kết cột %d: %w", colIdx, err)
+			return nil, fmt.Errorf("combine commitments for column %d: %w", colIdx, err)
 		}
-
 		return append([]byte(nil), combined...), nil
 	}, nil
 }
@@ -56,81 +66,220 @@ func ComputeExtendedDataSquareWithLeopard(data [][]byte) (rsmt2d.ExtendedDataSqu
 	return *eds, nil
 }
 
-// // ComputeCodedBlockWithRLNC thực hiện phân mảnh cell và mã hóa với hệ số xác định [cite: 172-175]
-// func ComputeCodedBlockWithRLNC(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare) ([][]rlnc.PieceData, error) {
-// 	width := int(eds.Width())
-// 	k := codec.MaxChunks()
-// 	codedBlock := make([][]rlnc.PieceData, width)
+// Function ComputeKZG for one column of the EDS, used in the Publisher's workflow [cite: 221]
+func ComputeKZG(codec *rlnc.RLNCCodec, columnData [][]byte, kzg KZGProvider) (PieceCommitment, []byte, error) {
+	if codec == nil {
+		return nil, nil, fmt.Errorf("codec is nil")
+	}
+	if kzg == nil {
+		return nil, nil, fmt.Errorf("kzg provider is nil")
+	}
+	if len(columnData) == 0 {
+		return nil, nil, fmt.Errorf("column data is empty")
+	}
 
-// 	for i := 0; i < width; i++ {
-// 		row := eds.Row(uint(i))
-// 		codedRow := make([]rlnc.PieceData, width)
-// 		for j := 0; j < width; j++ {
-// 			cell := row[j]
-// 			// 1. Chia cell thành k mảnh nhỏ [cite: 172]
-// 			chunkSize := len(cell) / k
-// 			fragments := make([][]byte, k)
-// 			for f := 0; f < k; f++ {
-// 				fragments[f] = cell[f*chunkSize : (f+1)*chunkSize]
-// 			}
+	k := codec.MaxChunks()
+	if k <= 0 {
+		return nil, nil, fmt.Errorf("invalid max chunks: %d", k)
+	}
 
-// 			// 2. Mã hóa RLNC với parityIdx = j (cột j) để đảm bảo tính xác định [cite: 177]
-// 			piece, err := codec.Encode(fragments, j)
-// 			if err != nil {
-// 				return nil, fmt.Errorf("lỗi mã hóa cell [%d,%d]: %w", i, j, err)
-// 			}
-// 			codedRow[j] = piece
-// 		}
-// 		codedBlock[i] = codedRow
-// 	}
-// 	return codedBlock, nil
-// }
+	cellSize := len(columnData[0])
+	if cellSize == 0 {
+		return nil, nil, fmt.Errorf("column cell size cannot be zero")
+	}
+	if cellSize%k != 0 {
+		return nil, nil, fmt.Errorf("column cell size %d is not divisible by k=%d", cellSize, k)
+	}
+
+	for i := 0; i < len(columnData); i++ {
+		if len(columnData[i]) != cellSize {
+			return nil, nil, fmt.Errorf("inconsistent cell size at row %d: got %d, expected %d", i, len(columnData[i]), cellSize)
+		}
+	}
+
+	pieceSize := cellSize / k
+	pieceCols := make([][][]byte, k)
+	for j := 0; j < k; j++ {
+		pieceCols[j] = make([][]byte, len(columnData))
+		for i := 0; i < len(columnData); i++ {
+			start := j * pieceSize
+			end := start + pieceSize
+			pieceCols[j][i] = columnData[i][start:end]
+		}
+	}
+
+	pieceCommits := make([]PieceCommitment, k)
+	for j := 0; j < k; j++ {
+		commit, err := kzg.Commit(pieceCols[j])
+		if err != nil {
+			return nil, nil, fmt.Errorf("commit piece column %d: %w", j, err)
+		}
+		pieceCommits[j] = commit
+	}
+
+	coeffs := codec.GenerateCoeffsRow(0, k)
+	combined, err := kzg.Combine(pieceCommits, coeffs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("combine piece commitments: %w", err)
+	}
+
+	return combined, coeffs, nil
+}
+
+// ComputeAndSetKateCommitments computes N*k piece commitments and N combined
+// commitments, then stores them on the EDS.
+func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider) (*PublishData, error) {
+	if codec == nil {
+		return nil, fmt.Errorf("codec is nil")
+	}
+	if eds == nil {
+		return nil, fmt.Errorf("eds is nil")
+	}
+	if kzg == nil {
+		return nil, fmt.Errorf("kzg provider is nil")
+	}
+
+	k := codec.MaxChunks()
+	n := int(eds.Width())
+
+	commitManager := NewCDACommitmentManager(k, kzg)
+	pieceCommits, err := commitManager.CommitEDS(eds)
+	if err != nil {
+		return nil, err
+	}
+
+	columnCommits := make([]PieceCommitment, n)
+	coeffss := make([][]byte, n)
+	for col := 0; col < n; col++ {
+		coeffs := codec.GenerateCoeffsRow(col, k)
+		start := col * k
+		combined, err := kzg.Combine(pieceCommits[start:start+k], coeffs)
+		if err != nil {
+			return nil, fmt.Errorf("combine commitments for column %d: %w", col, err)
+		}
+		columnCommits[col] = append([]byte(nil), combined...)
+		coeffss[col] = append([]byte(nil), coeffs...)
+	}
+
+	pieceAsBytes := make([][]byte, len(pieceCommits))
+	for i := range pieceCommits {
+		pieceAsBytes[i] = append([]byte(nil), pieceCommits[i]...)
+	}
+	colAsBytes := make([][]byte, len(columnCommits))
+	for i := range columnCommits {
+		colAsBytes[i] = append([]byte(nil), columnCommits[i]...)
+	}
+	eds.SetKatePieceCommitments(pieceAsBytes)
+	if err := eds.SetKateColumnCommitments(colAsBytes); err != nil {
+		return nil, err
+	}
+
+	return &PublishData{
+		PieceComm:  pieceCommits,
+		ColumnComm: columnCommits,
+		Coeffs:     coeffss,
+	}, nil
+}
 
 // ComputePublishDataCell thực hiện quy trình chuẩn của Publisher trong CDA [cite: 216-225]
 func ComputePublishDataCell(codec *rlnc.RLNCCodec, data [][]byte, kzg KZGProvider) (*PublishData, error) {
-	k := codec.MaxChunks()
-	coeffss := make([][]byte, k)
 	// Bước 1: Mở rộng dữ liệu (Macro-layer: 2D Reed-Solomon) [cite: 171]
 	eds, err := ComputeExtendedDataSquareWithLeopard(data)
 	if err != nil {
 		return nil, err
 	}
+
+	pubData, err := ComputeAndSetKateCommitments(codec, &eds, kzg)
+	if err != nil {
+		return nil, err
+	}
+
+	openProofCells, err := ComputeOpenProofCells(codec, &eds, kzg)
+	if err != nil {
+		return nil, err
+	}
+	pubData.OpenProofCells = openProofCells
+
+	return pubData, nil
+}
+
+func ComputeOpenProofCells(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider) ([][]byte, error) {
+	if codec == nil {
+		return nil, fmt.Errorf("codec is nil")
+	}
+	if eds == nil {
+		return nil, fmt.Errorf("eds is nil")
+	}
+	if kzg == nil {
+		return nil, fmt.Errorf("kzg provider is nil")
+	}
+
+	gnarkKZG, ok := kzg.(*GnarkKZG)
+	if !ok {
+		return nil, fmt.Errorf("kzg provider does not support opening proof generation")
+	}
+
+	k := codec.MaxChunks()
+	if k <= 0 {
+		return nil, fmt.Errorf("invalid max chunks: %d", k)
+	}
+
 	n := int(eds.Width())
-
-	// Bước 2: Tính Nk Piece Commitments (Mỏ neo cho từng mảnh nhỏ) [cite: 221]
-	// Lưu ý: allPieceCommits có độ dài N * k
-	commitManager := NewCDACommitmentManager(k, kzg)
-	allPieceCommits, err := commitManager.CommitEDS(&eds)
-	if err != nil {
-		return nil, err
+	if n == 0 {
+		return nil, fmt.Errorf("eds width is zero")
 	}
 
-	if err != nil {
-		return nil, err
+	firstCol := eds.Col(0)
+	if len(firstCol) == 0 || len(firstCol[0]) == 0 {
+		return nil, fmt.Errorf("eds has empty cells")
+	}
+	cellSize := len(firstCol[0])
+	if cellSize%k != 0 {
+		return nil, fmt.Errorf("column cell size %d is not divisible by k=%d", cellSize, k)
 	}
 
-	// Bước 4: Tổ hợp đồng cấu (Homomorphic Combination) [cite: 223-224]
-	// Từ Nk cam kết mảnh, tạo ra N cam kết cột công khai.
-	columnCommits := make([]PieceCommitment, n)
+	pieceSize := cellSize / k
+	openProofCells := make([][]byte, n*n*k)
+
 	for col := 0; col < n; col++ {
-		// Lấy vector hệ số g xác định cho cột col
-		coeffs := codec.GenerateCoeffsRow(col, k)
-		coeffss[col] = coeffs
-
-		// Lấy dải k cam kết mảnh thuộc về siêu cột (supercolumn) này
-		start := col * k
-		targetPieceCommits := allPieceCommits[start : start+k]
-
-		// com_coded = sum(g_i * piece_com_i)
-		combined, err := kzg.Combine(targetPieceCommits, coeffs)
-		if err != nil {
-			return nil, fmt.Errorf("lỗi tổ hợp cam kết cột %d: %w", col, err)
+		column := eds.Col(uint(col))
+		if len(column) != n {
+			return nil, fmt.Errorf("invalid column height at col %d: got %d, want %d", col, len(column), n)
 		}
-		columnCommits[col] = combined
+
+		for row := 0; row < n; row++ {
+			if len(column[row]) != cellSize {
+				return nil, fmt.Errorf("inconsistent cell size at row %d col %d: got %d, want %d", row, col, len(column[row]), cellSize)
+			}
+		}
+
+		for piece := 0; piece < k; piece++ {
+			scalars := make([]fr.Element, n)
+			start := piece * pieceSize
+			end := start + pieceSize
+			for row := 0; row < n; row++ {
+				scalars[row].SetBytes(column[row][start:end])
+			}
+
+			for row := 0; row < n; row++ {
+				var point fr.Element
+				point.SetInterface(int64(row))
+
+				proof, err := bls12381kzg.Open(scalars, point, gnarkKZG.srs.Pk)
+				if err != nil {
+					return nil, fmt.Errorf("open proof at row %d col %d piece %d: %w", row, col, piece, err)
+				}
+
+				var out bytes.Buffer
+				if _, err := proof.WriteTo(&out); err != nil {
+					return nil, fmt.Errorf("marshal proof at row %d col %d piece %d: %w", row, col, piece, err)
+				}
+
+				idx := ((row * n) + col) * k
+				openProofCells[idx+piece] = out.Bytes()
+			}
+		}
 	}
 
-	return &PublishData{
-		ColumnComm: columnCommits,
-		Coeffs:     coeffss,
-	}, nil
+	return openProofCells, nil
 }

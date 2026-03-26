@@ -3,11 +3,20 @@ package rsmt2d
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 
+	"github.com/celestiaorg/merkletree"
 	"golang.org/x/sync/errgroup"
 )
+
+// KateMerkleProof proves a column commitment belongs to the Kate commitment tree.
+type KateMerkleProof struct {
+	ProofSet   [][]byte
+	ProofIndex uint64
+	NumLeaves  uint64
+}
 
 // Axis represents which of a row or col.
 type Axis int
@@ -350,40 +359,6 @@ func (eds *ExtendedDataSquare) verifyAgainstColRoots(
 	return nil
 }
 
-// verifyColumnCommiment checks that a Commitment is valid for index of the column in EDS. Look up to verifyAgainstCol and RowRoots
-func (eds *ExtendedDataSquare) verifyColumnCommitment(
-	colComm []byte,
-	colIdx uint,
-	columnKZGCommits [][]byte,
-) error {
-	if len(columnKZGCommits) != int(eds.width) {
-		return fmt.Errorf("invalid number of KZG commitments: got %d, want %d", len(columnKZGCommits), eds.width)
-	}
-	if colIdx >= eds.width {
-		return fmt.Errorf("column index out of range: %d", colIdx)
-	}
-
-	commitsWithCandidate := make([][]byte, len(columnKZGCommits))
-	copy(commitsWithCandidate, columnKZGCommits)
-	commitsWithCandidate[colIdx] = colComm
-
-	computedKateRoot, err := eds.KZGColumnMerkleRoot(commitsWithCandidate)
-	if err != nil {
-		return fmt.Errorf("failed to compute kate root for column %d: %w", colIdx, err)
-	}
-
-	storedKateRoot, err := eds.KateRoot()
-	if err != nil {
-		return err
-	}
-
-	if !bytes.Equal(computedKateRoot, storedKateRoot) {
-		return &ErrByzantineData{Col, colIdx, nil}
-	}
-
-	return nil
-}
-
 // preRepairSanityCheck returns an error if any row or column in the EDS is
 // complete and the computed Merkle root for that row or column doesn't match
 // the given root in rowRoots or colRoots.
@@ -523,4 +498,59 @@ func (eds *ExtendedDataSquare) verifyEncoding(data [][]byte, rebuiltIndex int, r
 		}
 	}
 	return nil
+}
+
+// BuildKateCommitmentProof builds an inclusion proof for the column commitment at colIdx.
+func (eds *ExtendedDataSquare) BuildKateCommitmentProof(colIdx uint) (*KateMerkleProof, error) {
+	kateCols, err := eds.getKateRoots()
+	if err != nil {
+		return nil, err
+	}
+	if int(colIdx) >= len(kateCols) {
+		return nil, fmt.Errorf("column index out of range: %d", colIdx)
+	}
+
+	tree := merkletree.New(sha256.New())
+	if err := tree.SetIndex(uint64(colIdx)); err != nil {
+		return nil, err
+	}
+	for i, commitment := range kateCols {
+		if commitment == nil {
+			return nil, fmt.Errorf("nil KZG commitment at column %d", i)
+		}
+		tree.Push(commitment)
+	}
+
+	root, proofSet, proofIndex, numLeaves := tree.Prove()
+	eds.kateRoot = append([]byte(nil), root...)
+
+	return &KateMerkleProof{
+		ProofSet:   deepCopy(proofSet),
+		ProofIndex: proofIndex,
+		NumLeaves:  numLeaves,
+	}, nil
+}
+
+// VerifyKateCommitmentProof verifies a Kate commitment inclusion proof against a root.
+// If root is nil, this function uses the EDS current KateRoot.
+func (eds *ExtendedDataSquare) VerifyKateCommitmentProof(proof *KateMerkleProof, root []byte) bool {
+	if proof == nil || len(proof.ProofSet) == 0 {
+		return false
+	}
+	targetRoot := root
+	if len(targetRoot) == 0 {
+		var err error
+		targetRoot, err = eds.KateRoot()
+		if err != nil {
+			return false
+		}
+	}
+
+	return merkletree.VerifyProof(
+		sha256.New(),
+		targetRoot,
+		proof.ProofSet,
+		proof.ProofIndex,
+		proof.NumLeaves,
+	)
 }

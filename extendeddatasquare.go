@@ -279,10 +279,28 @@ func (eds *ExtendedDataSquare) RowRoots() ([][]byte, error) {
 	return deepCopy(rowRoots), nil
 }
 
-// SetKateColumnCommitmentFn sets the function used to compute KZG commitments
-// for each column.
+// SetKateColumnCommitmentFn sets a custom per-column commitment function.
 func (eds *ExtendedDataSquare) SetKateColumnCommitmentFn(fn KateColumnCommitmentFn) {
 	eds.setKateColumnCommitmentFn(fn)
+}
+
+// SetKatePieceCommitments stores N*k commitments for piece-columns.
+func (eds *ExtendedDataSquare) SetKatePieceCommitments(pieceCommitments [][]byte) {
+	eds.setKatePieceList(pieceCommitments)
+}
+
+// KatePieceCommitments returns N*k commitments for piece-columns.
+func (eds *ExtendedDataSquare) KatePieceCommitments() [][]byte {
+	return deepCopy(eds.katePieceList)
+}
+
+// SetKateColumnCommitments stores N commitments for EDS columns.
+func (eds *ExtendedDataSquare) SetKateColumnCommitments(columnCommitments [][]byte) error {
+	if len(columnCommitments) != int(eds.width) {
+		return fmt.Errorf("invalid number of KZG commitments: got %d, want %d", len(columnCommitments), eds.width)
+	}
+	eds.setKateList(columnCommitments)
+	return nil
 }
 
 // KateCols returns the KZG commitments of all columns in the square.
@@ -313,25 +331,29 @@ func (eds *ExtendedDataSquare) KZGColumnMerkleRoot(columnCommitments [][]byte) (
 	return tree.Root()
 }
 
-// KateRoot computes the root of all per-column KZG commitments.
+// KateRoot computes the Merkle root over per-column KZG commitments.
 func (eds *ExtendedDataSquare) KateRoot() ([]byte, error) {
+	if eds.kateRoot != nil {
+		return append([]byte(nil), eds.kateRoot...), nil
+	}
 	kateCols, err := eds.getKateRoots()
 	if err != nil {
 		return nil, err
 	}
-
-	return eds.KZGColumnMerkleRoot(kateCols)
+	root, err := eds.KZGColumnMerkleRoot(kateCols)
+	if err != nil {
+		return nil, err
+	}
+	eds.kateRoot = append([]byte(nil), root...)
+	return root, nil
 }
 
-// SetKateRootFromColumnCommitments validates the provided commitments and
-// computes their aggregate Kate root.
+// SetKateRootFromColumnCommitments validates commitments and computes aggregate root.
 func (eds *ExtendedDataSquare) SetKateRootFromColumnCommitments(columnCommitments [][]byte) ([]byte, error) {
-	if len(columnCommitments) != int(eds.width) {
-		return nil, fmt.Errorf("invalid number of KZG commitments: got %d, want %d", len(columnCommitments), eds.width)
+	if err := eds.SetKateColumnCommitments(columnCommitments); err != nil {
+		return nil, err
 	}
-
-	eds.kateRoots = deepCopy(columnCommitments)
-	return eds.KZGColumnMerkleRoot(columnCommitments)
+	return eds.KateRoot()
 }
 
 func deepCopy(original [][]byte) [][]byte {
