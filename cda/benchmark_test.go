@@ -14,11 +14,11 @@ import (
 // It uses RunParallel to approximate multi-threaded production load.
 func BenchmarkComputePublishDataCellParallel(b *testing.B) {
 	const (
-		k         = 4
-		shareSize = 64
+		k         = 16
+		shareSize = 128
 	)
 
-	odsWidths := []int{2, 4, 8, 16, 32, 64, 128, 256}
+	odsWidths := []int{128, 256}
 
 	for _, odsWidth := range odsWidths {
 		odsWidth := odsWidth
@@ -39,14 +39,14 @@ func BenchmarkComputePublishDataCellParallel(b *testing.B) {
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
 					data := cloneBenchmarkBlock(rawData)
-					pub, err := ComputePublishDataCell(codec, data, kzg)
+					_, err := ComputePublishDataCell(codec, data, kzg)
 					if err != nil {
 						b.Fatalf("ComputePublishDataCell failed: %v", err)
 					}
 
-					if len(pub.OpenProofCells) == 0 {
-						b.Fatalf("OpenProofCells must not be empty")
-					}
+					// if len(pub.OpenProofCells) == 0 {
+					// 	b.Fatalf("OpenProofCells must not be empty")
+					// }
 				}
 			})
 		})

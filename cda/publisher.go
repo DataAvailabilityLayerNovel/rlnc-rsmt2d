@@ -11,10 +11,10 @@ import (
 )
 
 type PublishData struct {
-	OpenProofCells [][]byte          // N*N*k open proof cells để chứng minh dữ liệu đã được cam kết.
-	PieceComm      []PieceCommitment // N*k cam kết cho N*k cột mảnh
-	ColumnComm     []PieceCommitment // N cam kết cho N cột mã hóa [cite: 224]
-	Coeffs         [][]byte          // Hệ số RLNC g_i cho từng cột (để tái tạo cam kết) [cite: 223]
+	// OpenProofCells [][]byte          // N*N*k open proof cells để chứng minh dữ liệu đã được cam kết.
+	PieceComm  []PieceCommitment // N*k cam kết cho N*k cột mảnh
+	ColumnComm []PieceCommitment // N cam kết cho N cột mã hóa [cite: 224]
+	Coeffs     [][]byte          // Hệ số RLNC g_i cho từng cột (để tái tạo cam kết) [cite: 223]
 }
 
 // BuildColumnCommitmentFnFromPublisher builds a callback that combines k piece
@@ -194,11 +194,11 @@ func ComputePublishDataCell(codec *rlnc.RLNCCodec, data [][]byte, kzg KZGProvide
 		return nil, err
 	}
 
-	openProofCells, err := ComputeOpenProofCells(codec, &eds, kzg)
-	if err != nil {
-		return nil, err
-	}
-	pubData.OpenProofCells = openProofCells
+	// openProofCells, err := ComputeOpenProofCells(codec, &eds, kzg)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// pubData.OpenProofCells = openProofCells
 
 	return pubData, nil
 }
