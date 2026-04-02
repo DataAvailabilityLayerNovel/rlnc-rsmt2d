@@ -46,7 +46,7 @@ func BuildColumnCommitmentFnFromPublisher(
 		if int(colIdx) >= n {
 			return nil, fmt.Errorf("column index out of range: %d", colIdx)
 		}
-		coeffs := codec.GenerateCoeffsRow(int(colIdx), k)
+		coeffs := codec.GenerateCoeffsByColHeight(int(colIdx), n)
 		start := int(colIdx) * k
 		combined, err := kzg.Combine(pieceCommits[start:start+k], coeffs)
 		if err != nil {
@@ -117,7 +117,7 @@ func ComputeKZG(codec *rlnc.RLNCCodec, columnData [][]byte, kzg KZGProvider) (Pi
 		pieceCommits[j] = commit
 	}
 
-	coeffs := codec.GenerateCoeffsRow(0, k)
+	coeffs := codec.GenerateCoeffsByColHeight(0, len(columnData))
 	combined, err := kzg.Combine(pieceCommits, coeffs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("combine piece commitments: %w", err)
@@ -151,7 +151,7 @@ func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDat
 	columnCommits := make([]PieceCommitment, n)
 	coeffss := make([][]byte, n)
 	for col := 0; col < n; col++ {
-		coeffs := codec.GenerateCoeffsRow(col, k)
+		coeffs := codec.GenerateCoeffsByColHeight(col, n)
 		start := col * k
 		combined, err := kzg.Combine(pieceCommits[start:start+k], coeffs)
 		if err != nil {

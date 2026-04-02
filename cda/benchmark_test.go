@@ -7,7 +7,7 @@ import (
 
 	rlnc "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
 	bls12381kzg "github.com/consensys/gnark-crypto/ecc/bls12-381/kzg"
-)
+ )
 
 // BenchmarkComputePublishDataCellParallel measures end-to-end publisher path:
 // raw data -> EDS -> piece/column commitments -> N*N*k opening proofs.
@@ -15,7 +15,7 @@ import (
 func BenchmarkComputePublishDataCellParallel(b *testing.B) {
 	const (
 		k         = 16
-		shareSize = 128
+		shareSize = 512
 	)
 
 	odsWidths := []int{128, 256}

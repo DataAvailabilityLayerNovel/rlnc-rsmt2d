@@ -2,6 +2,8 @@ package rlnc
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"sync/atomic"
 )
@@ -40,10 +42,9 @@ func (c *RLNCCodec) ValidateChunkSize(chunkSize int) error {
 	return nil
 }
 
-// GenerateCoeffsRow tạo ra hệ số ngẫu nhiên thật sự cho một hàng mã hóa.
+// GenerateCoeffs tạo ra hệ số ngẫu nhiên thật sự cho một hàng mã hóa.
 // parityIdx được giữ lại để tương thích API call-site hiện tại.
-func (c *RLNCCodec) GenerateCoeffsRow(parityIdx int, k int) []byte {
-	_ = parityIdx
+func (c *RLNCCodec) GenerateCoeffs(k int) []byte {
 	coeffs := make([]byte, k)
 	for i := 0; i < k; i++ {
 		b := make([]byte, 1)
@@ -54,6 +55,32 @@ func (c *RLNCCodec) GenerateCoeffsRow(parityIdx int, k int) []byte {
 		}
 		coeffs[i] = b[0]
 	}
+	return coeffs
+}
+
+// GenerateCoeffsByColHeight generates deterministic non-zero coefficients for
+// column commitment combination using only (colIdx, height) as seed.
+func (c *RLNCCodec) GenerateCoeffsByColHeight(colIdx int, height int) []byte {
+	k := c.maxChunks
+	if k <= 0 {
+		return nil
+	}
+
+	coeffs := make([]byte, k)
+	for i := 0; i < k; i++ {
+		var seed [12]byte
+		binary.LittleEndian.PutUint32(seed[0:4], uint32(colIdx))
+		binary.LittleEndian.PutUint32(seed[4:8], uint32(height))
+		binary.LittleEndian.PutUint32(seed[8:12], uint32(i))
+		h := sha256.Sum256(seed[:])
+
+		coeff := h[0]
+		if coeff == 0 {
+			coeff = (h[1] % 255) + 1
+		}
+		coeffs[i] = coeff
+	}
+
 	return coeffs
 }
 
@@ -88,7 +115,7 @@ func (c *RLNCCodec) Encode(data [][]byte, parityIdx int) (PieceData, error) {
 	piece := make([]byte, shareSize)
 
 	// Với symbol 32-byte (Fr/KZG path), giữ hệ số nhỏ để tránh tràn biểu diễn []byte ở bước recode.
-	coeffs := c.GenerateCoeffsRow(parityIdx, k)
+	coeffs := c.GenerateCoeffs(k)
 	if shareSize == frSymbolSize {
 		coeffs = generateFrStableCoeffs(k)
 	}
