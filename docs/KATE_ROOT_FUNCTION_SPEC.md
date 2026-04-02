@@ -4,10 +4,9 @@
 
 Tai lieu nay mo ta chuc nang da duoc bo sung quanh KZG column commitments va Kate root trong rsmt2d:
 
-- Luu kate root trong data square.
-- Build Merkle tree tu danh sach commitments theo cot.
-- Tinh root va gan vao EDS.
-- Verify commitment theo index cot dua tren kate root da luu.
+- Luu va cache KATE commitments/root trong data square.
+- Tinh Merkle root tu danh sach column commitments.
+- Build/verify Merkle proof cho commitment theo index cot.
 - Cach su dung flow Publisher (CDA manager + KZG provider) de tao commitments hop le.
 
 Phan nay map voi cac file:
@@ -17,7 +16,7 @@ Phan nay map voi cac file:
 - verification logic: extendeddatacrossword.go
 - publisher flow: cda/publisher.go
 - manager tao piece commitments: cda/kzg.go
-- demo test theo payload: datahandle_test.go
+- test chinh: kate_commitment_test.go
 
 ## 2) Context Architecture
 
@@ -27,7 +26,9 @@ dataSquare co cac truong cache root:
 
 - rowRoots: roots cua cac hang.
 - colRoots: roots cua cac cot.
-- kateRoots: root cua Merkle tree built tren KZG column commitments.
+- kateList: danh sach KZG commitments theo cot (N commitments).
+- katePieceList: danh sach piece commitments (N\*k commitments).
+- kateRoot: root cua Merkle tree built tren KZG column commitments.
 
 Luu y: khi du lieu trong square thay doi, toan bo root cache phai reset.
 
@@ -40,7 +41,7 @@ Publisher flow (CDA):
 3. Moi piece-column duoc KZG Commit -> tao Nk piece commitments.
 4. Dung he so RLNC g_i de Combine k piece commitments cua moi cot -> N column commitments.
 5. N column commitments la leaves cua Merkle tree KATE.
-6. Root cua tree duoc set vao EDS (kateRoots).
+6. Root cua tree duoc tinh va cache qua KateRoot() (field kateRoot).
 
 ## 3) Implemented Functional APIs
 
@@ -48,49 +49,54 @@ Publisher flow (CDA):
 
 File: datasquare.go
 
-- resetRoots() da clear them kateRoots.
+- resetRoots() clear rowRoots/colRoots/kateRoot/kateList/katePieceList.
 - Duoc goi trong cac thao tac mutate nhu setRowSlice, setColSlice, SetCell, extendSquare.
 
 Expected behavior:
 
-- Moi thay doi du lieu => rowRoots/colRoots/kateRoots deu invalid.
+- Moi thay doi du lieu => toan bo root/commitment cache deu invalid.
 
 ### 3.2 Build KZG commitment Merkle tree
 
 File: extendeddatasquare.go
 
-- BuildKZGColumnMerkleTree(columnKZGCommits [][]byte) (Tree, error)
-  - Validate len(commits) == eds.Width().
-  - Validate tung commitment khong rong.
-  - Push theo thu tu cot vao tree.
-
 - KZGColumnMerkleRoot(columnKZGCommits [][]byte) ([]byte, error)
-  - Build tree va tra ve Root().
+  - Validate len(commits) == eds.Width().
+  - Validate tung commitment != nil.
+  - Push commitments vao tree theo thu tu cot va tra ve Root().
 
 ### 3.3 Set/Get cached Kate root
 
 File: extendeddatasquare.go
 
+- SetKateColumnCommitments(columnKZGCommits [][]byte) error
+  - Validate so luong commitments = eds.Width().
+  - Luu commitments vao kateList va reset kateRoot.
+
+- KateCols() ([][]byte, error)
+  - Tra ve deep-copy danh sach column commitments dang co trong square.
+
 - SetKateRootFromColumnCommitments(columnKZGCommits [][]byte) ([]byte, error)
-  - Tinh root tu commitments.
-  - Copy root vao eds.kateRoots.
-  - Return root vua tinh.
+  - Goi SetKateColumnCommitments.
+  - Sau do goi KateRoot() de tinh/cache root.
 
 - KateRoot() ([]byte, error)
-  - Tra ve root da cache (copy).
-  - Tra loi neu root chua duoc set.
+  - Neu da co cache thi tra ve copy.
+  - Neu chua co cache thi lay kate commitments, tinh root, roi cache vao eds.kateRoot.
 
-### 3.4 Verify one column commitment by index
+### 3.4 Build/Verify one column commitment proof by index
 
 File: extendeddatacrossword.go
 
-- verifyColumnCommitment(colComm []byte, colIdx uint, columnKZGCommits [][]byte) error
-  - Validate kich thuoc input.
+- BuildKateCommitmentProof(colIdx uint) (\*KateMerkleProof, error)
+  - Lay kate commitments theo cot.
   - Validate colIdx trong range.
-  - Thay commitment tai colIdx bang colComm trong 1 ban copy list commitments.
-  - Tinh candidate root.
-  - So sanh voi stored kate root.
-  - Mismatch => ErrByzantineData.
+  - Build Merkle proof cho leaf tai colIdx.
+  - Dong thoi cache root vao eds.kateRoot.
+
+- VerifyKateCommitmentProof(proof \*KateMerkleProof, root []byte) bool
+  - Verify proof voi root truyen vao.
+  - Neu root nil/empty thi tu dong dung eds.KateRoot().
 
 ## 4) Publisher-compatible Usage
 
@@ -101,40 +107,33 @@ Flow tao commitments dung theo cda/publisher.go:
 3. Tao manager: NewCDACommitmentManager(k, kzg).
 4. CommitEDS de lay allPieceCommits (Nk).
 5. Moi cot:
-   - coeffs := codec.GenerateCoeffsRow(col, k)
+  - coeffs := codec.GenerateCoeffsByColHeight(col, n)
    - target := allPieceCommits[col*k : col*k+k]
    - columnCommit := kzg.Combine(target, coeffs)
-6. Goi SetKateRootFromColumnCommitments(columnCommits).
-7. Verify tung cot bang verifyColumnCommitment (internal) hoac verify root equality qua KZGColumnMerkleRoot + KateRoot.
+6. Goi eds.SetKatePieceCommitments(pieceCommits) va eds.SetKateColumnCommitments(columnCommits).
+7. Khi can root: goi eds.KateRoot() hoac eds.SetKateRootFromColumnCommitments(columnCommits).
+8. Khi can inclusion proof: goi BuildKateCommitmentProof(colIdx) + VerifyKateCommitmentProof(proof, root).
 
 ## 5) Test Context Added
 
-File: datahandle_test.go
+File: kate_commitment_test.go
 
 Muc tieu test:
 
-- Nhan 1 payload []byte.
-- Cat thanh shares co shareSize co dinh.
-- Compute EDS.
-- Lay row/col roots.
-- Dung real CDA manager + real Gnark KZG de tao commitments.
-- Set kate root.
-- Verify root consistency cho tung commitment index.
-- Log chi tiet toan bo state observable cua data square:
-  - width
-  - flattened data
-  - row roots
-  - col roots
-  - kate root
-  - row/col matrix view
+- Tao fixed shares -> Compute EDS.
+- Dung real RLNC codec + real Gnark KZG de tao piece/column commitments qua ComputeAndSetKateCommitments.
+- Kiem tra so luong commitments piece (N\*k) va column (N).
+- Kiem tra KateCols(), KatePieceCommitments(), KateRoot() hoat dong dung.
+- Build proof cho 1 cot (BuildKateCommitmentProof) va verify pass voi root dung.
+- Mutate root va verify fail (negative check).
 
 ## 6) Error Handling Rules
 
 - Invalid number of commitments: tra error ro rang.
-- Empty commitment leaf: tra error.
-- Out-of-range colIdx: tra error.
-- Kate root chua duoc set: KateRoot() tra error.
-- Commitment mismatch voi stored kate root: tra ErrByzantineData.
+- Nil commitment leaf: tra error trong KZGColumnMerkleRoot/BuildKateCommitmentProof.
+- Out-of-range colIdx: tra error trong BuildKateCommitmentProof.
+- Neu chua co kate commitments va khong co createKateColFn: KateRoot() tra error.
+- VerifyKateCommitmentProof tra false khi proof/root khong hop le.
 
 ## 7) Operational Guide
 
@@ -142,29 +141,31 @@ Muc tieu test:
 
 go test ./...
 
-### 7.2 Run only data handling test with verbose logs
+### 7.2 Run only Kate commitment test with verbose logs
 
-go test -run TestHandleByteBatchAndLogDataSquare -v .
+go test -run TestComputeAndSetKateCommitmentsAndProof -v .
 
 ### 7.3 Typical integration sequence in app code
 
 1. Build EDS from raw shares.
-2. Produce publisher column commitments via CDA manager + KZG provider.
-3. Set kate root on EDS.
-4. Persist/transmit:
+2. Produce publisher commitments via CDA manager + KZG provider.
+3. Store piece commitments + column commitments on EDS.
+4. Compute/read kate root from EDS.
+5. (Optional) Build and verify proof for a specific column commitment.
+6. Persist/transmit:
    - column commitments
    - kate root
-5. On receiver/validator side, recompute candidate root and compare to kate root.
+7. On receiver/validator side, verify proof against trusted kate root, or recompute root and compare.
 
 ## 8) Notes and Constraints
 
 - Commitment ordering is critical: leaf i must map to column i.
-- Any mutation of EDS data invalidates all root caches.
+- Any mutation of EDS data invalidates root and KATE commitment caches.
 - RLNC coefficients affect combined column commitments, so producer/consumer must share consistent commitment generation context.
 - SRS setup for Gnark KZG must be compatible with expected polynomial domain.
 
 ## 9) Future Improvements
 
-- Export a public VerifyColumnCommitment API (neu can external packages goi truc tiep).
-- Add negative test: tamper 1 column commitment -> verify mismatch expected.
+- Add test cho case nil/invalid commitment list khi goi KateRoot/KZGColumnMerkleRoot.
+- Add benchmark for BuildKateCommitmentProof/VerifyKateCommitmentProof voi width lon.
 - Add benchmark for KZGColumnMerkleRoot with large widths.
