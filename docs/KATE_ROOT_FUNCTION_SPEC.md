@@ -43,6 +43,9 @@ Publisher flow (CDA):
 5. N column commitments la leaves cua Merkle tree KATE.
 6. Root cua tree duoc tinh va cache qua KateRoot() (field kateRoot).
 
+Thêm hàm mới ComputeOpenProofCell(codec, eds, kzg, row, col) để chỉ sinh proof cho 1 cell (row, col) (trả về k proofs tương ứng k piece).
+Cập nhật ComputeOpenProofCells(...) để lặp qua từng (row, col) và gọi hàm mới này, rồi map kết quả vào openProofCells.
+
 ## 3) Implemented Functional APIs
 
 ### 3.1 Reset cache when data mutates
@@ -107,9 +110,11 @@ Flow tao commitments dung theo cda/publisher.go:
 3. Tao manager: NewCDACommitmentManager(k, kzg).
 4. CommitEDS de lay allPieceCommits (Nk).
 5. Moi cot:
-  - coeffs := codec.GenerateCoeffsByColHeight(col, n)
-   - target := allPieceCommits[col*k : col*k+k]
-   - columnCommit := kzg.Combine(target, coeffs)
+
+- coeffs := codec.GenerateCoeffsByColHeight(col, n)
+- target := allPieceCommits[col*k : col*k+k]
+- columnCommit := kzg.Combine(target, coeffs)
+
 6. Goi eds.SetKatePieceCommitments(pieceCommits) va eds.SetKateColumnCommitments(columnCommits).
 7. Khi can root: goi eds.KateRoot() hoac eds.SetKateRootFromColumnCommitments(columnCommits).
 8. Khi can inclusion proof: goi BuildKateCommitmentProof(colIdx) + VerifyKateCommitmentProof(proof, root).

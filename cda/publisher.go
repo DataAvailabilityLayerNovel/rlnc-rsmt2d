@@ -203,7 +203,8 @@ func ComputePublishDataCell(codec *rlnc.RLNCCodec, data [][]byte, kzg KZGProvide
 	return pubData, nil
 }
 
-func ComputeOpenProofCells(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider) ([][]byte, error) {
+// ComputeOpenProofCell generates k open proofs for a single cell at (row, col).
+func ComputeOpenProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider, row, col int) ([][]byte, error) {
 	if codec == nil {
 		return nil, fmt.Errorf("codec is nil")
 	}
@@ -228,55 +229,93 @@ func ComputeOpenProofCells(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare
 	if n == 0 {
 		return nil, fmt.Errorf("eds width is zero")
 	}
+	if row < 0 || row >= n {
+		return nil, fmt.Errorf("row index out of range: %d", row)
+	}
+	if col < 0 || col >= n {
+		return nil, fmt.Errorf("column index out of range: %d", col)
+	}
 
-	firstCol := eds.Col(0)
-	if len(firstCol) == 0 || len(firstCol[0]) == 0 {
+	column := eds.Col(uint(col))
+	if len(column) != n {
+		return nil, fmt.Errorf("invalid column height at col %d: got %d, want %d", col, len(column), n)
+	}
+
+	if len(column[0]) == 0 {
 		return nil, fmt.Errorf("eds has empty cells")
 	}
-	cellSize := len(firstCol[0])
+	cellSize := len(column[0])
 	if cellSize%k != 0 {
 		return nil, fmt.Errorf("column cell size %d is not divisible by k=%d", cellSize, k)
 	}
 
+	for i := 0; i < n; i++ {
+		if len(column[i]) != cellSize {
+			return nil, fmt.Errorf("inconsistent cell size at row %d col %d: got %d, want %d", i, col, len(column[i]), cellSize)
+		}
+	}
+
 	pieceSize := cellSize / k
+	proofs := make([][]byte, k)
+
+	var point fr.Element
+	point.SetInterface(int64(row))
+
+	for piece := 0; piece < k; piece++ {
+		scalars := make([]fr.Element, n)
+		start := piece * pieceSize
+		end := start + pieceSize
+		for i := 0; i < n; i++ {
+			scalars[i].SetBytes(column[i][start:end])
+		}
+
+		proof, err := bls12381kzg.Open(scalars, point, gnarkKZG.srs.Pk)
+		if err != nil {
+			return nil, fmt.Errorf("open proof at row %d col %d piece %d: %w", row, col, piece, err)
+		}
+
+		var out bytes.Buffer
+		if _, err := proof.WriteTo(&out); err != nil {
+			return nil, fmt.Errorf("marshal proof at row %d col %d piece %d: %w", row, col, piece, err)
+		}
+		proofs[piece] = out.Bytes()
+	}
+
+	return proofs, nil
+}
+
+func ComputeOpenProofCells(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider) ([][]byte, error) {
+	if codec == nil {
+		return nil, fmt.Errorf("codec is nil")
+	}
+	if eds == nil {
+		return nil, fmt.Errorf("eds is nil")
+	}
+	if kzg == nil {
+		return nil, fmt.Errorf("kzg provider is nil")
+	}
+
+	k := codec.MaxChunks()
+	if k <= 0 {
+		return nil, fmt.Errorf("invalid max chunks: %d", k)
+	}
+
+	n := int(eds.Width())
+	if n == 0 {
+		return nil, fmt.Errorf("eds width is zero")
+	}
+
 	openProofCells := make([][]byte, n*n*k)
 
 	for col := 0; col < n; col++ {
-		column := eds.Col(uint(col))
-		if len(column) != n {
-			return nil, fmt.Errorf("invalid column height at col %d: got %d, want %d", col, len(column), n)
-		}
-
 		for row := 0; row < n; row++ {
-			if len(column[row]) != cellSize {
-				return nil, fmt.Errorf("inconsistent cell size at row %d col %d: got %d, want %d", row, col, len(column[row]), cellSize)
+			proofs, err := ComputeOpenProofCell(codec, eds, kzg, row, col)
+			if err != nil {
+				return nil, err
 			}
-		}
-
-		for piece := 0; piece < k; piece++ {
-			scalars := make([]fr.Element, n)
-			start := piece * pieceSize
-			end := start + pieceSize
-			for row := 0; row < n; row++ {
-				scalars[row].SetBytes(column[row][start:end])
-			}
-
-			for row := 0; row < n; row++ {
-				var point fr.Element
-				point.SetInterface(int64(row))
-
-				proof, err := bls12381kzg.Open(scalars, point, gnarkKZG.srs.Pk)
-				if err != nil {
-					return nil, fmt.Errorf("open proof at row %d col %d piece %d: %w", row, col, piece, err)
-				}
-
-				var out bytes.Buffer
-				if _, err := proof.WriteTo(&out); err != nil {
-					return nil, fmt.Errorf("marshal proof at row %d col %d piece %d: %w", row, col, piece, err)
-				}
-
-				idx := ((row * n) + col) * k
-				openProofCells[idx+piece] = out.Bytes()
+			idx := ((row * n) + col) * k
+			for piece := 0; piece < k; piece++ {
+				openProofCells[idx+piece] = proofs[piece]
 			}
 		}
 	}
