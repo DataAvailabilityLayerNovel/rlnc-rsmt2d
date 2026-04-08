@@ -284,6 +284,15 @@ func ComputeOpenProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare,
 	return proofs, nil
 }
 
+// ComputeCombinedProofCell tổ hợp k open proof của một cell thành một proof duy nhất để giảm overhead chứng minh.
+func ComputeCombinedProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider, row, col, height int) ([]byte, error) {
+	proofs, err := ComputeOpenProofCell(codec, eds, kzg, row, col)
+	if err != nil {
+		return nil, err
+	}
+	return kzg.CombineProofs(proofs, codec.GenerateCoeffsByColHeight(col, height))
+}
+
 func ComputeOpenProofCells(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider) ([][]byte, error) {
 	if codec == nil {
 		return nil, fmt.Errorf("codec is nil")
