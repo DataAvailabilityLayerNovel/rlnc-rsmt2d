@@ -58,9 +58,9 @@ func (c *RLNCCodec) GenerateCoeffs(k int) []byte {
 	return coeffs
 }
 
-// GenerateCoeffsByColHeight generates deterministic non-zero coefficients for
-// column commitment combination using only (colIdx, height) as seed.
-func (c *RLNCCodec) GenerateCoeffsByColHeight(colIdx int, height int) []byte {
+// GenerateCoeffsByColSeed generates deterministic non-zero coefficients for
+// column commitment combination using only (colIdx, seedParam (seedParam: 1 deterministic seed, gen random, store in DAH)) as seed.
+func (c *RLNCCodec) GenerateCoeffsByColSeed(colIdx int, seedParam int) []byte {
 	k := c.maxChunks
 	if k <= 0 {
 		return nil
@@ -70,7 +70,7 @@ func (c *RLNCCodec) GenerateCoeffsByColHeight(colIdx int, height int) []byte {
 	for i := 0; i < k; i++ {
 		var seed [12]byte
 		binary.LittleEndian.PutUint32(seed[0:4], uint32(colIdx))
-		binary.LittleEndian.PutUint32(seed[4:8], uint32(height))
+		binary.LittleEndian.PutUint32(seed[4:8], uint32(seedParam))
 		binary.LittleEndian.PutUint32(seed[8:12], uint32(i))
 		h := sha256.Sum256(seed[:])
 

@@ -69,20 +69,20 @@ func TestRLNC_CDA_Flow(t *testing.T) {
 	})
 }
 
-func TestGenerateCoeffsByColHeight_IsDeterministic(t *testing.T) {
+func TestGenerateCoeffsByColSeed_IsDeterministic(t *testing.T) {
 	codec := NewRLNCCodec(8)
 
-	a := codec.GenerateCoeffsByColHeight(3, 16)
-	b := codec.GenerateCoeffsByColHeight(3, 16)
-	require.Equal(t, a, b, "same (col,height) must produce same coeffs")
+	a := codec.GenerateCoeffsByColSeed(3, 16)
+	b := codec.GenerateCoeffsByColSeed(3, 16)
+	require.Equal(t, a, b, "same (col,seed) must produce same coeffs")
 
 	for i, v := range a {
 		require.NotZero(t, v, "coeff[%d] should be non-zero", i)
 	}
 
-	c := codec.GenerateCoeffsByColHeight(4, 16)
+	c := codec.GenerateCoeffsByColSeed(4, 16)
 	require.NotEqual(t, a, c, "different col should produce different coeffs")
 
-	d := codec.GenerateCoeffsByColHeight(3, 32)
-	require.NotEqual(t, a, d, "different height should produce different coeffs")
+	d := codec.GenerateCoeffsByColSeed(3, 32)
+	require.NotEqual(t, a, d, "different seed should produce different coeffs")
 }

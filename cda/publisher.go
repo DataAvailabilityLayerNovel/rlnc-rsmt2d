@@ -24,7 +24,7 @@ func BuildColumnCommitmentFnFromPublisher(
 	codec *rlnc.RLNCCodec,
 	eds *rsmt2d.ExtendedDataSquare,
 	kzg KZGProvider,
-	height int,
+	seedParam int,
 ) (rsmt2d.KateColumnCommitmentFn, error) {
 	if codec == nil {
 		return nil, fmt.Errorf("codec is nil")
@@ -48,7 +48,7 @@ func BuildColumnCommitmentFnFromPublisher(
 		if int(colIdx) >= n {
 			return nil, fmt.Errorf("column index out of range: %d", colIdx)
 		}
-		coeffs := codec.GenerateCoeffsByColHeight(int(colIdx), height)
+		coeffs := codec.GenerateCoeffsByColSeed(int(colIdx), seedParam)
 		start := int(colIdx) * k
 		combined, err := kzg.Combine(pieceCommits[start:start+k], coeffs)
 		if err != nil {
@@ -69,7 +69,7 @@ func ComputeExtendedDataSquareWithLeopard(data [][]byte) (rsmt2d.ExtendedDataSqu
 }
 
 // Function ComputeKZG for one column of the EDS, used in the Publisher's workflow [cite: 221]
-func ComputeKZG(codec *rlnc.RLNCCodec, columnData [][]byte, kzg KZGProvider) (PieceCommitment, []byte, error) {
+func ComputeKZG(codec *rlnc.RLNCCodec, columnData [][]byte, kzg KZGProvider, seedParam int) (PieceCommitment, []byte, error) {
 	if codec == nil {
 		return nil, nil, fmt.Errorf("codec is nil")
 	}
@@ -119,7 +119,7 @@ func ComputeKZG(codec *rlnc.RLNCCodec, columnData [][]byte, kzg KZGProvider) (Pi
 		pieceCommits[j] = commit
 	}
 
-	coeffs := codec.GenerateCoeffsByColHeight(0, len(columnData))
+	coeffs := codec.GenerateCoeffsByColSeed(0, seedParam)
 	combined, err := kzg.Combine(pieceCommits, coeffs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("combine piece commitments: %w", err)
@@ -130,7 +130,7 @@ func ComputeKZG(codec *rlnc.RLNCCodec, columnData [][]byte, kzg KZGProvider) (Pi
 
 // ComputeAndSetKateCommitments computes N*k piece commitments and N combined
 // commitments, then stores them on the EDS.
-func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider, height int) (*PublishData, error) {
+func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider, seedParam int) (*PublishData, error) {
 	if codec == nil {
 		return nil, fmt.Errorf("codec is nil")
 	}
@@ -142,7 +142,7 @@ func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDat
 	}
 
 	k := codec.MaxChunks()
-	n := height
+	n := int(eds.Width())
 	commitManager := NewCDACommitmentManager(k, kzg)
 	pieceCommits, err := commitManager.CommitEDS(eds)
 	if err != nil {
@@ -152,7 +152,7 @@ func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDat
 	columnCommits := make([]PieceCommitment, n)
 	coeffss := make([][]byte, n)
 	for col := 0; col < n; col++ {
-		coeffs := codec.GenerateCoeffsByColHeight(col, height)
+		coeffs := codec.GenerateCoeffsByColSeed(col, seedParam)
 		start := col * k
 		combined, err := kzg.Combine(pieceCommits[start:start+k], coeffs)
 		if err != nil {
@@ -185,7 +185,7 @@ func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDat
 // GetKateColumnsSimple is a convenience wrapper around ComputeAndSetKateCommitments
 // that provides default codec and KZG provider, so external callers only need to pass EDS.
 // Returns only the column commitments without requiring knowledge of codec/KZG setup.
-func GetKateColumnsSimple(eds *rsmt2d.ExtendedDataSquare, height int) (*PublishData, error) {
+func GetKateColumnsSimple(eds *rsmt2d.ExtendedDataSquare, seedParam int) (*PublishData, error) {
 	if eds == nil {
 		return nil, fmt.Errorf("eds is nil")
 	}
@@ -202,7 +202,7 @@ func GetKateColumnsSimple(eds *rsmt2d.ExtendedDataSquare, height int) (*PublishD
 	kzg := NewGnarkKZG(*srs)
 
 	// Compute and set Kate commitments
-	pubData, err := ComputeAndSetKateCommitments(codec, eds, kzg, height)
+	pubData, err := ComputeAndSetKateCommitments(codec, eds, kzg, seedParam)
 	if err != nil {
 		return nil, err
 	}
@@ -212,14 +212,14 @@ func GetKateColumnsSimple(eds *rsmt2d.ExtendedDataSquare, height int) (*PublishD
 }
 
 // ComputePublishDataCell thực hiện quy trình chuẩn của Publisher trong CDA [cite: 216-225]
-func ComputePublishDataCell(codec *rlnc.RLNCCodec, data [][]byte, kzg KZGProvider, height int) (*PublishData, error) {
+func ComputePublishDataCell(codec *rlnc.RLNCCodec, data [][]byte, kzg KZGProvider, seedParam int) (*PublishData, error) {
 	// Bước 1: Mở rộng dữ liệu (Macro-layer: 2D Reed-Solomon) [cite: 171]
 	eds, err := ComputeExtendedDataSquareWithLeopard(data)
 	if err != nil {
 		return nil, err
 	}
 
-	pubData, err := ComputeAndSetKateCommitments(codec, &eds, kzg, height)
+	pubData, err := ComputeAndSetKateCommitments(codec, &eds, kzg, seedParam)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +268,7 @@ func ComputeOpenProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare,
 
 	column := eds.Col(uint(col))
 	if len(column) != n {
-		return nil, fmt.Errorf("invalid column height at col %d: got %d, want %d", col, len(column), n)
+		return nil, fmt.Errorf("invalid column seedParam at col %d: got %d, want %d", col, len(column), n)
 	}
 
 	if len(column[0]) == 0 {
@@ -315,12 +315,12 @@ func ComputeOpenProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare,
 }
 
 // ComputeCombinedProofCell tổ hợp k open proof của một cell thành một proof duy nhất để giảm overhead chứng minh.
-func ComputeCombinedProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider, row, col, height int) ([]byte, error) {
+func ComputeCombinedProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider, row, col, seedParam int) ([]byte, error) {
 	proofs, err := ComputeOpenProofCell(codec, eds, kzg, row, col)
 	if err != nil {
 		return nil, err
 	}
-	return kzg.CombineProofs(proofs, codec.GenerateCoeffsByColHeight(col, height))
+	return kzg.CombineProofs(proofs, codec.GenerateCoeffsByColSeed(col, seedParam))
 }
 
 // ComputeOpenProofCells tính toán N*N*K open proof cells cho toàn bộ EDS, được sử dụng trong quy trình chuẩn của Publisher [cite: 216-225]
