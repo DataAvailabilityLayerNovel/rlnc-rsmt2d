@@ -139,9 +139,9 @@ func TestKateColsWithComputeAndSetKateCommitments(t *testing.T) {
 		t.Fatalf("NewSRS error: %v", err)
 	}
 	kzg := cda.NewGnarkKZG(*srs)
-
+	height := 30000
 	// ✓ Set up commitments using the production function
-	pub, err := cda.ComputeAndSetKateCommitments(codec, eds, kzg)
+	pub, err := cda.ComputeAndSetKateCommitments(codec, eds, kzg, height)
 	if err != nil {
 		t.Fatalf("ComputeAndSetKateCommitments error: %v", err)
 	}

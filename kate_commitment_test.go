@@ -25,8 +25,8 @@ func TestComputeAndSetKateCommitmentsAndProof(t *testing.T) {
 		t.Fatalf("NewSRS error: %v", err)
 	}
 	kzg := cda.NewGnarkKZG(*srs)
-
-	pub, err := cda.ComputeAndSetKateCommitments(codec, eds, kzg)
+	height := 30000
+	pub, err := cda.ComputeAndSetKateCommitments(codec, eds, kzg, height)
 	if err != nil {
 		t.Fatalf("ComputeAndSetKateCommitments error: %v", err)
 	}
