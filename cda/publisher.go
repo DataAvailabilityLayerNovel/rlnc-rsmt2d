@@ -181,6 +181,34 @@ func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDat
 	}, nil
 }
 
+// GetKateColumnsSimple is a convenience wrapper around ComputeAndSetKateCommitments
+// that provides default codec and KZG provider, so external callers only need to pass EDS.
+// Returns only the column commitments without requiring knowledge of codec/KZG setup.
+func GetKateColumnsSimple(eds *rsmt2d.ExtendedDataSquare) (*PublishData, error) {
+	if eds == nil {
+		return nil, fmt.Errorf("eds is nil")
+	}
+
+	// Create default codec (k=4 is standard for most use cases)
+	codec := rlnc.NewRLNCCodec(4)
+
+	// Create default KZG provider with standard SRS setup
+	srs, err := bls12381kzg.NewSRS(8, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SRS: %w", err)
+	}
+	kzg := NewGnarkKZG(*srs)
+
+	// Compute and set Kate commitments
+	pubData, err := ComputeAndSetKateCommitments(codec, eds, kzg)
+	if err != nil {
+		return nil, err
+	}
+
+	// Return only the column commitments
+	return pubData, nil
+}
+
 // ComputePublishDataCell thực hiện quy trình chuẩn của Publisher trong CDA [cite: 216-225]
 func ComputePublishDataCell(codec *rlnc.RLNCCodec, data [][]byte, kzg KZGProvider) (*PublishData, error) {
 	// Bước 1: Mở rộng dữ liệu (Macro-layer: 2D Reed-Solomon) [cite: 171]
@@ -293,6 +321,7 @@ func ComputeCombinedProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSqu
 	return kzg.CombineProofs(proofs, codec.GenerateCoeffsByColHeight(col, height))
 }
 
+// ComputeOpenProofCells tính toán N*N*K open proof cells cho toàn bộ EDS, được sử dụng trong quy trình chuẩn của Publisher [cite: 216-225]
 func ComputeOpenProofCells(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider) ([][]byte, error) {
 	if codec == nil {
 		return nil, fmt.Errorf("codec is nil")
