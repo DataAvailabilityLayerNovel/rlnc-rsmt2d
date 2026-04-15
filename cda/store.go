@@ -19,7 +19,7 @@ type StorageNode struct {
 // HandleStoreFromPublisher xử lý khi Publisher gửi ô dữ liệu thô (Raw Cell)
 // cellData: Dữ liệu thô của ô (ví dụ 2KB)
 // pieceProofs: k bằng chứng KZG cho k mảnh nhỏ của ô này (do Publisher cung cấp)
-func (s *StorageNode) HandleStoreFromPublisher(cellData []byte, pieceProofs []PieceCommitment) error {
+func (s *StorageNode) HandleStoreFromPublisher(cellData []byte, pieceProofs [][]byte) error {
 	k := s.Codec.MaxChunks()
 
 	// 1. Phân mảnh ô thô thành k mảnh nhỏ (fragments)

@@ -57,7 +57,7 @@ func (m *RecipientManager) RecodePieces(pieces []ReceivedPiece) (*ReceivedPiece,
 	// 3. Tổ hợp đồng cấu bằng chứng KZG (Proof)
 	// proof_new = sum(beta_i * proof_i)
 	// Lưu ý: Nút cần lưu lại vector beta từ bước Recode để thực hiện bước này
-	proofs := make([]PieceCommitment, len(pieces))
+	proofs := make([][]byte, len(pieces))
 	for i, p := range pieces {
 		proofs[i] = p.Proof
 	}

@@ -73,7 +73,7 @@ func (g *GnarkKZG) GnarkCombine(commits []PieceCommitment, coeffs []byte) (Piece
 }
 
 // GnarkCombineProofs tổ hợp tuyến tính nhiều opening proof tại cùng một điểm mở.
-func (g *GnarkKZG) GnarkCombineProofs(proofs []PieceCommitment, coeffs []byte) (PieceCommitment, error) {
+func (g *GnarkKZG) GnarkCombineProofs(proofs [][]byte, coeffs []byte) ([]byte, error) {
 	if len(proofs) == 0 {
 		return nil, fmt.Errorf("proofs cannot be empty")
 	}

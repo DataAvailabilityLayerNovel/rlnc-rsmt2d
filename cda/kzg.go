@@ -16,7 +16,7 @@ type KZGProvider interface {
 	// Đây là tính chất đồng cấu cộng của KZG
 	Combine(commits []PieceCommitment, coeffs []byte) (PieceCommitment, error)
 	// CombineProofs thực hiện tổ hợp tuyến tính các opening proof tại cùng một điểm mở.
-	CombineProofs(proofs []PieceCommitment, coeffs []byte) (PieceCommitment, error)
+	CombineProofs(proofs [][]byte, coeffs []byte) ([]byte, error)
 	// Verify xác thực một mảnh với cam kết công khai
 	Verify(commit PieceCommitment, row int, data []byte, proof []byte) bool
 }
@@ -86,7 +86,7 @@ func (g *GnarkKZG) Combine(commits []PieceCommitment, coeffs []byte) (PieceCommi
 	return g.GnarkCombine(commits, coeffs)
 }
 
-func (g *GnarkKZG) CombineProofs(proofs []PieceCommitment, coeffs []byte) (PieceCommitment, error) {
+func (g *GnarkKZG) CombineProofs(proofs [][]byte, coeffs []byte) ([]byte, error) {
 	return g.GnarkCombineProofs(proofs, coeffs)
 }
 
