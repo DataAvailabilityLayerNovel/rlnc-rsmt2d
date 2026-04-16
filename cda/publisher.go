@@ -18,6 +18,16 @@ type PublishData struct {
 	Coeffs     [][]byte          // Hệ số RLNC g_i cho từng cột (để tái tạo cam kết) [cite: 223]
 }
 
+func validateSeedParam(seedParam int) error {
+	if seedParam < 0 {
+		return fmt.Errorf("seedParam must be non-negative: %d", seedParam)
+	}
+	if uint64(seedParam) > uint64(^uint32(0)) {
+		return fmt.Errorf("seedParam out of uint32 range: %d", seedParam)
+	}
+	return nil
+}
+
 // BuildColumnCommitmentFnFromPublisher builds a callback that combines k piece
 // commitments into one commitment for each EDS column.
 func BuildColumnCommitmentFnFromPublisher(
@@ -34,6 +44,9 @@ func BuildColumnCommitmentFnFromPublisher(
 	}
 	if kzg == nil {
 		return nil, fmt.Errorf("kzg provider is nil")
+	}
+	if err := validateSeedParam(seedParam); err != nil {
+		return nil, err
 	}
 
 	k := codec.MaxChunks()
@@ -69,7 +82,7 @@ func ComputeExtendedDataSquareWithLeopard(data [][]byte) (rsmt2d.ExtendedDataSqu
 }
 
 // Function ComputeKZG for one column of the EDS, used in the Publisher's workflow [cite: 221]
-func ComputeKZG(codec *rlnc.RLNCCodec, columnData [][]byte, kzg KZGProvider, seedParam int) (PieceCommitment, []byte, error) {
+func ComputeKZG(codec *rlnc.RLNCCodec, columnIdx int, columnData [][]byte, kzg KZGProvider, seedParam int) (PieceCommitment, []byte, error) {
 	if codec == nil {
 		return nil, nil, fmt.Errorf("codec is nil")
 	}
@@ -78,6 +91,9 @@ func ComputeKZG(codec *rlnc.RLNCCodec, columnData [][]byte, kzg KZGProvider, see
 	}
 	if len(columnData) == 0 {
 		return nil, nil, fmt.Errorf("column data is empty")
+	}
+	if err := validateSeedParam(seedParam); err != nil {
+		return nil, nil, err
 	}
 
 	k := codec.MaxChunks()
@@ -119,7 +135,7 @@ func ComputeKZG(codec *rlnc.RLNCCodec, columnData [][]byte, kzg KZGProvider, see
 		pieceCommits[j] = commit
 	}
 
-	coeffs := codec.GenerateCoeffsByColSeed(0, seedParam)
+	coeffs := codec.GenerateCoeffsByColSeed(columnIdx, seedParam)
 	combined, err := kzg.Combine(pieceCommits, coeffs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("combine piece commitments: %w", err)
@@ -139,6 +155,9 @@ func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDat
 	}
 	if kzg == nil {
 		return nil, fmt.Errorf("kzg provider is nil")
+	}
+	if err := validateSeedParam(seedParam); err != nil {
+		return nil, err
 	}
 
 	k := codec.MaxChunks()
@@ -189,6 +208,9 @@ func GetKateColumnsSimple(eds *rsmt2d.ExtendedDataSquare, seedParam int) (*Publi
 	if eds == nil {
 		return nil, fmt.Errorf("eds is nil")
 	}
+	if err := validateSeedParam(seedParam); err != nil {
+		return nil, err
+	}
 
 	// Create default codec (k=4 is standard for most use cases)
 	codec := rlnc.NewRLNCCodec(4)
@@ -213,6 +235,10 @@ func GetKateColumnsSimple(eds *rsmt2d.ExtendedDataSquare, seedParam int) (*Publi
 
 // ComputePublishDataCell thực hiện quy trình chuẩn của Publisher trong CDA [cite: 216-225]
 func ComputePublishDataCell(codec *rlnc.RLNCCodec, data [][]byte, kzg KZGProvider, seedParam int) (*PublishData, error) {
+	if err := validateSeedParam(seedParam); err != nil {
+		return nil, err
+	}
+
 	// Bước 1: Mở rộng dữ liệu (Macro-layer: 2D Reed-Solomon) [cite: 171]
 	eds, err := ComputeExtendedDataSquareWithLeopard(data)
 	if err != nil {
@@ -316,6 +342,10 @@ func ComputeOpenProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare,
 
 // ComputeCombinedProofCell tổ hợp k open proof của một cell thành một proof duy nhất để giảm overhead chứng minh.
 func ComputeCombinedProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare, kzg KZGProvider, row, col, seedParam int) ([]byte, error) {
+	if err := validateSeedParam(seedParam); err != nil {
+		return nil, err
+	}
+
 	proofs, err := ComputeOpenProofCell(codec, eds, kzg, row, col)
 	if err != nil {
 		return nil, err
