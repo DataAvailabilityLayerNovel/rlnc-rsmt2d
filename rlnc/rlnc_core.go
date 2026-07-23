@@ -6,10 +6,10 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 )
 
-// solveGaussian: Giải ma trận A * X = B bằng khử Gauss
+// SolveGaussian: Giải ma trận A * X = B bằng khử Gauss
 // matrix: Ma trận hệ số A (K x K)
 // data: Mảng chứa các share (B), kết quả sẽ được ghi đè vào đây (X)
-func solveGaussian(A [][]byte, B [][]byte) ([][]byte, error) {
+func SolveGaussian(A [][]byte, B [][]byte) ([][]byte, error) {
 	k := len(A)
 	shareSize := len(B[0])
 

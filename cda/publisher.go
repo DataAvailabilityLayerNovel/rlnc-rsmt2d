@@ -13,9 +13,9 @@ import (
 
 type PublishData struct {
 	// OpenProofCells [][]byte          // N*N*k open proof cells để chứng minh dữ liệu đã được cam kết.
-	PieceComm  []PieceCommitment // N*k cam kết cho N*k cột mảnh
-	ColumnComm []PieceCommitment // N cam kết cho N cột mã hóa [cite: 224]
-	Coeffs     [][]byte          // Hệ số RLNC g_i cho từng cột (để tái tạo cam kết) [cite: 223]
+	PieceComm  []PieceCommitment   // N*k cam kết cho N*k cột mảnh
+	ColumnComm []ColumnCommitment  // N cam kết cho N cột mã hóa [cite: 224]
+	Coeffs     [][]byte            // Hệ số RLNC g_i cho từng cột (để tái tạo cam kết) [cite: 223]
 }
 
 func validateSeedParam(seedParam int) error {
@@ -82,7 +82,7 @@ func ComputeExtendedDataSquareWithLeopard(data [][]byte) (rsmt2d.ExtendedDataSqu
 }
 
 // Function ComputeKZG for one column of the EDS, used in the Publisher's workflow [cite: 221]
-func ComputeKZG(codec *rlnc.RLNCCodec, columnIdx int, columnData [][]byte, kzg KZGProvider, seedParam int) (PieceCommitment, []byte, error) {
+func ComputeKZG(codec *rlnc.RLNCCodec, columnIdx int, columnData [][]byte, kzg KZGProvider, seedParam int) (ColumnCommitment, []byte, error) {
 	if codec == nil {
 		return nil, nil, fmt.Errorf("codec is nil")
 	}
@@ -168,7 +168,7 @@ func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDat
 		return nil, err
 	}
 
-	columnCommits := make([]PieceCommitment, n)
+	columnCommits := make([]ColumnCommitment, n)
 	coeffss := make([][]byte, n)
 	for col := 0; col < n; col++ {
 		coeffs := codec.GenerateCoeffsByColSeed(col, seedParam)
@@ -350,7 +350,12 @@ func ComputeCombinedProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSqu
 	if err != nil {
 		return nil, err
 	}
-	return kzg.CombineProofs(proofs, codec.GenerateCoeffsByColSeed(col, seedParam))
+
+	openingProofs := make([]OpeningProof, len(proofs))
+	for i, p := range proofs {
+		openingProofs[i] = OpeningProof(p)
+	}
+	return kzg.CombineProofs(openingProofs, codec.GenerateCoeffsByColSeed(col, seedParam))
 }
 
 // ComputeOpenProofCells tính toán N*N*K open proof cells cho toàn bộ EDS, được sử dụng trong quy trình chuẩn của Publisher [cite: 216-225]

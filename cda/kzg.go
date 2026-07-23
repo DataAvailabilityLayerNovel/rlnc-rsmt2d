@@ -5,20 +5,25 @@ import (
 	rlnc "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
 )
 
-// PieceCommitment đại diện cho cam kết KZG của một cột mảnh
+// PieceCommitment đại diện cho cam kết KZG của một cột mảnh (Piece-column)
 type PieceCommitment []byte
+
+// ColumnCommitment đại diện cho cam kết KZG tổ hợp của một cột gốc (Column commitment)
+type ColumnCommitment []byte
+
+// OpeningProof đại diện cho bằng chứng mở KZG (KZG opening proof)
+type OpeningProof []byte
 
 // KZGProvider giả định các hàm xử lý mật mã cơ bản
 type KZGProvider interface {
-	// Commit tạo cam kết cho một mảng các byte (cột dữ liệu)
+	// Commit tạo cam kết cho một mảng các byte (cột dữ liệu mảnh)
 	Commit(data [][]byte) (PieceCommitment, error)
-	// Combine thực hiện tổ hợp tuyến tính các cam kết: sum(coeff_i * commit_i)
-	// Đây là tính chất đồng cấu cộng của KZG
-	Combine(commits []PieceCommitment, coeffs []byte) (PieceCommitment, error)
+	// Combine thực hiện tổ hợp tuyến tính các cam kết mảnh để tạo ra cam kết cột gốc: sum(coeff_i * commit_i)
+	Combine(commits []PieceCommitment, coeffs []byte) (ColumnCommitment, error)
 	// CombineProofs thực hiện tổ hợp tuyến tính các opening proof tại cùng một điểm mở.
-	CombineProofs(proofs [][]byte, coeffs []byte) ([]byte, error)
-	// Verify xác thực một mảnh với cam kết công khai
-	Verify(commit PieceCommitment, row int, data []byte, proof []byte) bool
+	CombineProofs(proofs []OpeningProof, coeffs []byte) (OpeningProof, error)
+	// Verify xác thực một mảnh với cam kết (mảnh hoặc cột tổ hợp) tương ứng và proof tương ứng
+	Verify(commit []byte, row int, data []byte, proof OpeningProof) bool
 }
 
 type CDACommitmentManager struct {
@@ -82,14 +87,14 @@ func (g *GnarkKZG) Commit(data [][]byte) (PieceCommitment, error) {
 	return g.GnarkCommit(data)
 }
 
-func (g *GnarkKZG) Combine(commits []PieceCommitment, coeffs []byte) (PieceCommitment, error) {
+func (g *GnarkKZG) Combine(commits []PieceCommitment, coeffs []byte) (ColumnCommitment, error) {
 	return g.GnarkCombine(commits, coeffs)
 }
 
-func (g *GnarkKZG) CombineProofs(proofs [][]byte, coeffs []byte) ([]byte, error) {
+func (g *GnarkKZG) CombineProofs(proofs []OpeningProof, coeffs []byte) (OpeningProof, error) {
 	return g.GnarkCombineProofs(proofs, coeffs)
 }
 
-func (g *GnarkKZG) Verify(commit PieceCommitment, row int, data []byte, proof []byte) bool {
+func (g *GnarkKZG) Verify(commit []byte, row int, data []byte, proof OpeningProof) bool {
 	return g.GnarkVerify(commit, row, data, proof)
 }

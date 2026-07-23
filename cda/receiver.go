@@ -11,7 +11,7 @@ type ReceivedPiece struct {
 	Row   int            // Vị trí hàng trong EDS
 	Col   int            // Vị trí cột (siêu cột) trong EDS
 	Data  rlnc.PieceData // Bao gồm mảnh dữ liệu 1/k và vector hệ số g
-	Proof []byte         // Bằng chứng KZG cho mảnh này
+	Proof OpeningProof   // Bằng chứng KZG cho mảnh này
 }
 
 type RecipientManager struct {
@@ -29,7 +29,7 @@ func NewRecipientManager(k int, kzg KZGProvider) *RecipientManager {
 }
 
 // VerifyPiece xác thực một mảnh nhận được dựa trên cam kết cột công khai
-func (m *RecipientManager) VerifyPiece(p ReceivedPiece, pubComm PieceCommitment) bool {
+func (m *RecipientManager) VerifyPiece(p ReceivedPiece, pubComm ColumnCommitment) bool {
 	// Trong CDA, mỗi mảnh RLNC tại hàng r, cột c được xác thực với cam kết cột c
 	// pubComm ở đây là ColumnComm[p.Col] đã được Publisher tổ hợp đồng cấu
 	return m.kzg.Verify(pubComm, p.Row, p.Data.Data, p.Proof)
@@ -40,6 +40,7 @@ func (m *RecipientManager) RecodePieces(pieces []ReceivedPiece) (*ReceivedPiece,
 	if len(pieces) == 0 {
 		return nil, fmt.Errorf("không có dữ liệu để recode")
 	}
+
 
 	// 1. Tách dữ liệu RLNC để đưa vào bộ giải mã
 	rlncPieces := make([]rlnc.PieceData, len(pieces))
@@ -57,7 +58,7 @@ func (m *RecipientManager) RecodePieces(pieces []ReceivedPiece) (*ReceivedPiece,
 	// 3. Tổ hợp đồng cấu bằng chứng KZG (Proof)
 	// proof_new = sum(beta_i * proof_i)
 	// Lưu ý: Nút cần lưu lại vector beta từ bước Recode để thực hiện bước này
-	proofs := make([][]byte, len(pieces))
+	proofs := make([]OpeningProof, len(pieces))
 	for i, p := range pieces {
 		proofs[i] = p.Proof
 	}

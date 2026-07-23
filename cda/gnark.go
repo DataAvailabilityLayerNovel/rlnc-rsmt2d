@@ -41,7 +41,7 @@ func (g *GnarkKZG) GnarkCommit(data [][]byte) (PieceCommitment, error) {
 
 // Combine thực hiện tổ hợp đồng cấu các cam kết dựa trên hệ số RLNC
 // com_coded = sum(g_i * com_i)
-func (g *GnarkKZG) GnarkCombine(commits []PieceCommitment, coeffs []byte) (PieceCommitment, error) {
+func (g *GnarkKZG) GnarkCombine(commits []PieceCommitment, coeffs []byte) (ColumnCommitment, error) {
 	if len(commits) == 0 {
 		return nil, fmt.Errorf("commits cannot be empty")
 	}
@@ -73,7 +73,7 @@ func (g *GnarkKZG) GnarkCombine(commits []PieceCommitment, coeffs []byte) (Piece
 }
 
 // GnarkCombineProofs tổ hợp tuyến tính nhiều opening proof tại cùng một điểm mở.
-func (g *GnarkKZG) GnarkCombineProofs(proofs [][]byte, coeffs []byte) ([]byte, error) {
+func (g *GnarkKZG) GnarkCombineProofs(proofs []OpeningProof, coeffs []byte) (OpeningProof, error) {
 	if len(proofs) == 0 {
 		return nil, fmt.Errorf("proofs cannot be empty")
 	}
@@ -117,7 +117,7 @@ func (g *GnarkKZG) GnarkCombineProofs(proofs [][]byte, coeffs []byte) ([]byte, e
 }
 
 // Verify xác thực một mảnh RLNC nhận được qua hàm định đề Pred(h, i, x)
-func (g *GnarkKZG) GnarkVerify(commit PieceCommitment, row int, data []byte, proof []byte) bool {
+func (g *GnarkKZG) GnarkVerify(commit []byte, row int, data []byte, proof OpeningProof) bool {
 	if row < 0 {
 		return false
 	}

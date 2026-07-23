@@ -154,7 +154,7 @@ func (c *RLNCCodec) Decode(pieces []PieceData) ([][]byte, error) {
 		copy(workingData[i], selected[i].Data)
 	}
 
-	original, err := solveGaussian(matrixA, workingData)
+	original, err := SolveGaussian(matrixA, workingData)
 	if err != nil {
 		return nil, err
 	}
@@ -172,8 +172,8 @@ func (c *RLNCCodec) Recode(pieces []PieceData) (PieceData, error) {
 // RecodeWithBeta trả về thêm vector beta nội bộ để tầng trên có thể tổ hợp proof.
 func (c *RLNCCodec) RecodeWithBeta(pieces []PieceData) (PieceData, []byte, error) {
 	n := len(pieces)
-	if n == 0 {
-		return PieceData{}, nil, fmt.Errorf("pieces is empty")
+	if n < 2 {
+		return PieceData{}, nil, fmt.Errorf("recode requires at least 2 pieces to avoid linear dependence, got %d", n)
 	}
 	k := c.maxChunks
 	shareSize := len(pieces[0].Data)
