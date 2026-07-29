@@ -61,8 +61,16 @@ func BuildColumnCommitmentFnFromPublisher(
 		if int(colIdx) >= n {
 			return nil, fmt.Errorf("column index out of range: %d", colIdx)
 		}
-		coeffs := codec.GenerateCoeffsByColSeed(int(colIdx), seedParam)
 		start := int(colIdx) * k
+		colPieces := pieceCommits[start : start+k]
+		colPiecesBytes := make([][]byte, k)
+		for i := 0; i < k; i++ {
+			colPiecesBytes[i] = append([]byte(nil), colPieces[i]...)
+		}
+		coeffs, err := HashToField(colPiecesBytes, k)
+		if err != nil {
+			return nil, err
+		}
 		combined, err := kzg.Combine(pieceCommits[start:start+k], coeffs)
 		if err != nil {
 			return nil, fmt.Errorf("combine commitments for column %d: %w", colIdx, err)
@@ -135,7 +143,14 @@ func ComputeKZG(codec *rlnc.RLNCCodec, columnIdx int, columnData [][]byte, kzg K
 		pieceCommits[j] = commit
 	}
 
-	coeffs := codec.GenerateCoeffsByColSeed(columnIdx, seedParam)
+	pieceCommitsBytes := make([][]byte, k)
+	for i := 0; i < k; i++ {
+		pieceCommitsBytes[i] = append([]byte(nil), pieceCommits[i]...)
+	}
+	coeffs, err := HashToField(pieceCommitsBytes, k)
+	if err != nil {
+		return nil, nil, err
+	}
 	combined, err := kzg.Combine(pieceCommits, coeffs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("combine piece commitments: %w", err)
@@ -168,22 +183,26 @@ func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDat
 		return nil, err
 	}
 
+	pieceAsBytes := make([][]byte, len(pieceCommits))
+	for i := range pieceCommits {
+		pieceAsBytes[i] = append([]byte(nil), pieceCommits[i]...)
+	}
+
+	globalCoeffs, err := HashToField(pieceAsBytes, k)
+	if err != nil {
+		return nil, err
+	}
+
 	columnCommits := make([]ColumnCommitment, n)
 	coeffss := make([][]byte, n)
 	for col := 0; col < n; col++ {
-		coeffs := codec.GenerateCoeffsByColSeed(col, seedParam)
 		start := col * k
-		combined, err := kzg.Combine(pieceCommits[start:start+k], coeffs)
+		combined, err := kzg.Combine(pieceCommits[start:start+k], globalCoeffs)
 		if err != nil {
 			return nil, fmt.Errorf("combine commitments for column %d: %w", col, err)
 		}
 		columnCommits[col] = append([]byte(nil), combined...)
-		coeffss[col] = append([]byte(nil), coeffs...)
-	}
-
-	pieceAsBytes := make([][]byte, len(pieceCommits))
-	for i := range pieceCommits {
-		pieceAsBytes[i] = append([]byte(nil), pieceCommits[i]...)
+		coeffss[col] = append([]byte(nil), globalCoeffs...)
 	}
 	colAsBytes := make([][]byte, len(columnCommits))
 	for i := range columnCommits {
@@ -351,11 +370,24 @@ func ComputeCombinedProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSqu
 		return nil, err
 	}
 
+	pieceCommits := eds.KatePieceCommitments()
+	if len(pieceCommits) == 0 {
+		return nil, fmt.Errorf("kate piece commitments are not set on EDS")
+	}
+	k := codec.MaxChunks()
+	start := col * k
+	colPieces := pieceCommits[start : start+k]
+
+	coeffs, err := HashToField(colPieces, k)
+	if err != nil {
+		return nil, err
+	}
+
 	openingProofs := make([]OpeningProof, len(proofs))
 	for i, p := range proofs {
 		openingProofs[i] = OpeningProof(p)
 	}
-	return kzg.CombineProofs(openingProofs, codec.GenerateCoeffsByColSeed(col, seedParam))
+	return kzg.CombineProofs(openingProofs, coeffs)
 }
 
 // ComputeOpenProofCells tính toán N*N*K open proof cells cho toàn bộ EDS, được sử dụng trong quy trình chuẩn của Publisher [cite: 216-225]
