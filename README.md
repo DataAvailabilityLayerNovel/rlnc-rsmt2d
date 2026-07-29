@@ -12,6 +12,8 @@ Repo này là một bản chỉnh sửa của `rsmt2d` của Celestia, tập tru
 - `leopard*.go`: codec Reed-Solomon dùng cho flow EDS chuẩn
 - `rlnc/`: codec RLNC, Gaussian elimination, recode và test riêng
 - `cda/`: publisher, store, receiver, KZG provider và test pipeline
+- Xem chi tiết mô tả các codec tại [docs/CODECS.md](file:///home/ubuntu/cda-network/rlnc-rsmt2d/docs/CODECS.md)
+
 
 ## Trạng thái hiện tại
 
@@ -20,14 +22,14 @@ Repo này là một bản chỉnh sửa của `rsmt2d` của Celestia, tập tru
 - hệ số RLNC được sinh bằng `crypto/rand`, không còn là ma trận xác định theo `SHA256`
 - `cda` đã có unit test cho pipeline và test với `GnarkKZG` thật
 
-## Lưu ý quan trọng
+## Khả năng tương thích RLNC và KZG
 
-RLNC hiện tổ hợp dữ liệu trên `GF(2^8)`, trong khi KZG của `gnark-crypto` làm việc trên trường `BLS12-381`. Vì vậy:
+RLNC và KZG đã được tích hợp đồng bộ:
+- Khi kích thước mảnh (share size) bằng 32 bytes (tương ứng với kích thước phần tử trường `frSymbolSize`), RLNC sẽ tự động thực hiện các phép tính tổ hợp (Encode, Decode, Recode) trên trường hữu hạn $F_r$ của đường cong elliptic `BLS12-381`.
+- Nhờ thiết kế đồng nhất trên trường $F_r$, việc kiểm tra cam kết (Verify) và tổ hợp cam kết (Combine) bằng KZG diễn ra đồng hình với các hệ số RLNC.
+- Người nhận (Receiver/Validator) có thể xác thực trực tiếp một mảnh dữ liệu RLNC (kể cả mảnh đã qua tái tổ hợp - Recoded) bằng KZG và bằng chứng mở (Opening Proof) được tổ hợp tương ứng.
+- Đối với các mảnh dữ liệu thông thường không phải 32 bytes, RLNC vẫn sử dụng trường số Galois `GF(2^8)` để tối ưu hóa hiệu năng tính toán.
 
-- recovery của RLNC hoạt động bình thường
-- combine/verify của KZG hoạt động bình thường nếu dữ liệu được tổ hợp trong cùng trường của KZG
-- verify trực tiếp một stored RLNC piece bằng KZG hiện chưa tương thích hoàn toàn về mặt đại số
-  `Đã chuyển trường số RLNC sang Fr tương thích với KZG`
 
 ## Chạy dự án
 

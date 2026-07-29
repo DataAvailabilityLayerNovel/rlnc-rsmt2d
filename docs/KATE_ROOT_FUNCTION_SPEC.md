@@ -111,9 +111,10 @@ Flow tao commitments dung theo cda/publisher.go:
 4. CommitEDS de lay allPieceCommits (Nk).
 5. Moi cot:
 
-- coeffs := codec.GenerateCoeffsByColHeight(col, n)
+- coeffs := codec.GenerateCoeffsByColSeed(col, seedParam)
 - target := allPieceCommits[col*k : col*k+k]
 - columnCommit := kzg.Combine(target, coeffs)
+
 
 6. Goi eds.SetKatePieceCommitments(pieceCommits) va eds.SetKateColumnCommitments(columnCommits).
 7. Khi can root: goi eds.KateRoot() hoac eds.SetKateRootFromColumnCommitments(columnCommits).

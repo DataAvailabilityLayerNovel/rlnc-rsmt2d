@@ -69,14 +69,37 @@ import (
 codec := rlnc.NewRLNCCodec(4)
 srs, _ := bls12381kzg.NewSRS(8, big.NewInt(-1))
 kzg := cda.NewGnarkKZG(*srs)
+seedParam := 1 // seedParam dùng để sinh hệ số RLNC nhất quán
 
 // ComputeAndSetKateCommitments sẽ handle mọi việc
-pubData, err := cda.ComputeAndSetKateCommitments(codec, eds, kzg)
+pubData, err := cda.ComputeAndSetKateCommitments(codec, eds, kzg, seedParam)
 if err != nil {
     log.Fatal(err)
 }
 
 // Giờ KateCols() hoạt động
+kateCols, err := eds.KateCols()
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Cách 4: Sử dụng hàm tiện ích đơn giản GetKateColumnsSimple
+
+Nếu bạn không muốn tự cấu hình codec và KZG provider thủ công, bạn có thể dùng wrapper tiện ích đơn giản:
+
+```go
+import (
+    "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/cda"
+)
+
+seedParam := 1
+pubData, err := cda.GetKateColumnsSimple(eds, seedParam)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Giờ KateCols() đã hoạt động
 kateCols, err := eds.KateCols()
 if err != nil {
     log.Fatal(err)
@@ -108,6 +131,7 @@ Khi muốn gọi `KateCols()` từ bên ngoài:
   - **Không**:
     - Nếu có KZG provider, dùng `SetKateColumnCommitmentFn()` (Cách 2)
     - Hoặc dùng `ComputeAndSetKateCommitments()` (Cách 3)
+    - Hoặc dùng tiện ích nhanh `GetKateColumnsSimple()` (Cách 4)
 - [ ] Gọi hàm set trước khi gọi `KateCols()`
 - [ ] Kiểm tra error return từ `KateCols()`
 
@@ -143,4 +167,5 @@ Nếu vẫn bị lỗi, hãy kiểm tra:
 
 - [KATE_ROOT_FUNCTION_SPEC.md](./docs/KATE_ROOT_FUNCTION_SPEC.md) - Spec chi tiết về KATE functions
 - [kate_commitment_test.go](./kate_commitment_test.go) - Integration test với KZG thực
-- [cda/publisher.go](./cda/publisher.go) - Implementation của `ComputeAndSetKateCommitments()`
+- [cda/publisher.go](./cda/publisher.go) - Implementation của `ComputeAndSetKateCommitments()` và `GetKateColumnsSimple()`
+

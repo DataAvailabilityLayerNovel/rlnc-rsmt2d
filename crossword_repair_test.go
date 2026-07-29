@@ -133,7 +133,8 @@ func TestCrossword_ByzantineDetection(t *testing.T) {
 	require.True(t, ok, "expected ErrByzantineData error")
 
 	// The mutation was at cell (1, 1). So Row 1 or Column 1 must be flagged.
-	// Since pre-repair checks run Row checks first, it should flag Row 1.
-	assert.Equal(t, rsmt2d.Row, byzErr.Axis, "expected Byzantine fault on Row axis")
+	// Since row and column sanity checks run in parallel, either Row 1 or Col 1 can be returned.
+	assert.Contains(t, []rsmt2d.Axis{rsmt2d.Row, rsmt2d.Col}, byzErr.Axis, "expected Byzantine fault on Row or Col axis")
 	assert.Equal(t, uint(1), byzErr.Index, "expected Byzantine fault on index 1")
 }
+
