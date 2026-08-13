@@ -67,7 +67,8 @@ func BuildColumnCommitmentFnFromPublisher(
 		for i := 0; i < k; i++ {
 			colPiecesBytes[i] = append([]byte(nil), colPieces[i]...)
 		}
-		coeffs, err := HashToField(colPiecesBytes, k)
+		colCommitsRoot, _ := BuildMerkleTree(colPiecesBytes)
+		coeffs, err := HashToField(colCommitsRoot, k, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -147,7 +148,8 @@ func ComputeKZG(codec *rlnc.RLNCCodec, columnIdx int, columnData [][]byte, kzg K
 	for i := 0; i < k; i++ {
 		pieceCommitsBytes[i] = append([]byte(nil), pieceCommits[i]...)
 	}
-	coeffs, err := HashToField(pieceCommitsBytes, k)
+	colCommitsRoot, _ := BuildMerkleTree(pieceCommitsBytes)
+	coeffs, err := HashToField(colCommitsRoot, k, int64(seedParam))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -188,7 +190,11 @@ func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDat
 		pieceAsBytes[i] = append([]byte(nil), pieceCommits[i]...)
 	}
 
-	globalCoeffs, err := HashToField(pieceAsBytes, k)
+	// 1. Build Merkle tree of piece commitments -> commits_root
+	commitsRoot, _ := BuildMerkleTree(pieceAsBytes)
+
+	// 2. Compute Fiat-Shamir challenge vector x = Hash(commits_root, k, height)
+	globalCoeffs, err := HashToField(commitsRoot, k, int64(seedParam))
 	if err != nil {
 		return nil, err
 	}
@@ -377,8 +383,12 @@ func ComputeCombinedProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSqu
 	k := codec.MaxChunks()
 	start := col * k
 	colPieces := pieceCommits[start : start+k]
-
-	coeffs, err := HashToField(colPieces, k)
+	colPiecesBytes := make([][]byte, k)
+	for i := 0; i < k; i++ {
+		colPiecesBytes[i] = append([]byte(nil), colPieces[i]...)
+	}
+	colCommitsRoot, _ := BuildMerkleTree(colPiecesBytes)
+	coeffs, err := HashToField(colCommitsRoot, k, int64(seedParam))
 	if err != nil {
 		return nil, err
 	}

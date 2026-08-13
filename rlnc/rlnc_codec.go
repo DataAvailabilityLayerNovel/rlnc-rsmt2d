@@ -143,15 +143,19 @@ func (c *RLNCCodec) Decode(pieces []PieceData) ([][]byte, error) {
 		if len(selected[i].Coeffs) != k {
 			return nil, fmt.Errorf("piece %d has invalid coeff length %d, expected %d", i, len(selected[i].Coeffs), k)
 		}
-		if len(selected[i].Data) != shareSize {
-			return nil, fmt.Errorf("piece %d has inconsistent data size", i)
-		}
 
 		matrixA[i] = make([]byte, k)
 		copy(matrixA[i], selected[i].Coeffs)
 
-		workingData[i] = make([]byte, shareSize)
-		copy(workingData[i], selected[i].Data)
+		if shareSize <= frSymbolSize {
+			workingData[i] = PadTo32Bytes(selected[i].Data)
+		} else {
+			if len(selected[i].Data) != shareSize {
+				return nil, fmt.Errorf("piece %d has inconsistent data size", i)
+			}
+			workingData[i] = make([]byte, shareSize)
+			copy(workingData[i], selected[i].Data)
+		}
 	}
 
 	original, err := SolveGaussian(matrixA, workingData)
@@ -178,24 +182,45 @@ func (c *RLNCCodec) RecodeWithBeta(pieces []PieceData) (PieceData, []byte, error
 	k := c.maxChunks
 	shareSize := len(pieces[0].Data)
 
-	// 1. Sinh ngẫu nhiên thật sự hệ số nội bộ beta
-	beta := make([]byte, n)
-	if shareSize == frSymbolSize {
-		beta = generateBoundedCoeffs(n, 3)
-	} else {
+	if shareSize <= frSymbolSize {
+		// Fr-compatible mode
+		beta := generateBoundedCoeffs(n, 3)
+
+		newPiece := make([]byte, frSymbolSize)
 		for i := 0; i < n; i++ {
-			b := make([]byte, 1)
-			_, err := rand.Read(b)
-			if err != nil || b[0] == 0 {
-				beta[i] = 1
-			} else {
-				beta[i] = b[0]
+			if len(pieces[i].Coeffs) != k {
+				return PieceData{}, nil, fmt.Errorf("piece %d has invalid coeff length %d, expected %d", i, len(pieces[i].Coeffs), k)
 			}
+			vectorMulAdd(newPiece, PadTo32Bytes(pieces[i].Data), beta[i])
+		}
+
+		newGlobalCoeffs := make([]byte, k)
+		for j := 0; j < k; j++ {
+			var sum uint16
+			for i := 0; i < n; i++ {
+				sum += uint16(beta[i]) * uint16(pieces[i].Coeffs[j])
+				if sum > 255 {
+					return PieceData{}, nil, fmt.Errorf("recode coefficient overflow at col %d: %d", j, sum)
+				}
+			}
+			newGlobalCoeffs[j] = byte(sum)
+		}
+
+		return PieceData{Data: TrimLeadingZeros(newPiece), Coeffs: newGlobalCoeffs}, beta, nil
+	}
+
+	// GF(2^8) mode for arbitrary buffer sizes
+	beta := make([]byte, n)
+	for i := 0; i < n; i++ {
+		b := make([]byte, 1)
+		_, err := rand.Read(b)
+		if err != nil || b[0] == 0 {
+			beta[i] = 1
+		} else {
+			beta[i] = b[0]
 		}
 	}
 
-	// 2. Tính toán mảnh dữ liệu mới (Recoding)
-	// C_new = sum(beta_i * C_i)
 	newPiece := make([]byte, shareSize)
 	for i := 0; i < n; i++ {
 		if len(pieces[i].Data) != shareSize {
@@ -207,25 +232,10 @@ func (c *RLNCCodec) RecodeWithBeta(pieces []PieceData) (PieceData, []byte, error
 		vectorMulAdd(newPiece, pieces[i].Data, beta[i])
 	}
 
-	// 3. Cập nhật ma trận hệ số toàn cục mới (Global Coefficients update)
-	// gamma_j = sum(beta_i * alpha_i,j)
 	newGlobalCoeffs := make([]byte, k)
-	if shareSize == frSymbolSize {
-		for j := 0; j < k; j++ {
-			var sum uint16
-			for i := 0; i < n; i++ {
-				sum += uint16(beta[i]) * uint16(pieces[i].Coeffs[j])
-				if sum > 255 {
-					return PieceData{}, nil, fmt.Errorf("recode coefficient overflow at col %d: %d", j, sum)
-				}
-			}
-			newGlobalCoeffs[j] = byte(sum)
-		}
-	} else {
-		for j := 0; j < k; j++ {
-			for i := 0; i < n; i++ {
-				newGlobalCoeffs[j] ^= mulGF8(beta[i], pieces[i].Coeffs[j])
-			}
+	for j := 0; j < k; j++ {
+		for i := 0; i < n; i++ {
+			newGlobalCoeffs[j] ^= mulGF8(beta[i], pieces[i].Coeffs[j])
 		}
 	}
 

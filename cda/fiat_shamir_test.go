@@ -12,40 +12,36 @@ import (
 
 func TestHashToField(t *testing.T) {
 	k := 4
-	commits := [][]byte{
-		make([]byte, 48),
-		make([]byte, 48),
-		make([]byte, 48),
-		make([]byte, 48),
-	}
-	for i := 0; i < k; i++ {
-		commits[i][0] = byte(i + 1)
-	}
+	commitsRoot := []byte("test_commits_root_32_bytes_long!")
+	height := int64(1)
 
 	// Compute Fiat-Shamir coefficients
-	coeffs, err := HashToField(commits, k)
+	coeffs, err := HashToField(commitsRoot, k, height)
 	require.NoError(t, err)
 	assert.Len(t, coeffs, k*32)
 
 	// Ensure output is deterministic
-	coeffs2, err := HashToField(commits, k)
+	coeffs2, err := HashToField(commitsRoot, k, height)
 	require.NoError(t, err)
 	assert.Equal(t, coeffs, coeffs2)
 
-	// Ensure modifying one commitment changes the output completely
-	commitsMutated := make([][]byte, k)
-	for i := 0; i < k; i++ {
-		commitsMutated[i] = append([]byte(nil), commits[i]...)
-	}
-	commitsMutated[0][0] ^= 0xff
+	// Ensure different height produces different output
+	coeffsDiffHeight, err := HashToField(commitsRoot, k, height+1)
+	require.NoError(t, err)
+	assert.NotEqual(t, coeffs, coeffsDiffHeight)
 
-	coeffsMutated, err := HashToField(commitsMutated, k)
+	// Ensure modifying commitsRoot changes the output completely
+	commitsRootMutated := append([]byte(nil), commitsRoot...)
+	commitsRootMutated[0] ^= 0xff
+
+	coeffsMutated, err := HashToField(commitsRootMutated, k, height)
 	require.NoError(t, err)
 	assert.NotEqual(t, coeffs, coeffsMutated)
 }
 
 func TestVerifyFiatShamir(t *testing.T) {
 	k := 4
+	height := int64(42)
 	srs, err := bls12381kzg.NewSRS(8, big.NewInt(-1))
 	require.NoError(t, err)
 	kzg := NewGnarkKZG(*srs)
@@ -70,8 +66,10 @@ func TestVerifyFiatShamir(t *testing.T) {
 		pieceCommits[j] = commit
 	}
 
+	commitsRoot, _ := BuildMerkleTree(pieceCommits)
+
 	// Compute coefficients and combined commitment
-	coeffs, err := HashToField(pieceCommits, k)
+	coeffs, err := HashToField(commitsRoot, k, height)
 	require.NoError(t, err)
 
 	pieceCommitsTyped := make([]PieceCommitment, k)
@@ -82,21 +80,21 @@ func TestVerifyFiatShamir(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify should pass
-	ok, err := VerifyFiatShamir(kzg, pieceCommits, coeffs, combined)
+	ok, err := VerifyFiatShamir(kzg, pieceCommits, commitsRoot, height, coeffs, combined)
 	require.NoError(t, err)
 	assert.True(t, ok)
 
 	// Verify should fail if coeffs are mutated
 	coeffsMutated := append([]byte(nil), coeffs...)
 	coeffsMutated[0] ^= 0x01
-	ok, err = VerifyFiatShamir(kzg, pieceCommits, coeffsMutated, combined)
+	ok, err = VerifyFiatShamir(kzg, pieceCommits, commitsRoot, height, coeffsMutated, combined)
 	require.NoError(t, err)
 	assert.False(t, ok)
 
 	// Verify should fail if combined commitment is mutated
 	combinedMutated := append([]byte(nil), combined...)
 	combinedMutated[0] ^= 0x01
-	ok, err = VerifyFiatShamir(kzg, pieceCommits, coeffs, combinedMutated)
+	ok, err = VerifyFiatShamir(kzg, pieceCommits, commitsRoot, height, coeffs, combinedMutated)
 	require.NoError(t, err)
 	assert.False(t, ok)
 }

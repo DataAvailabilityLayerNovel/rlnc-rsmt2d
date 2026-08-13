@@ -11,6 +11,9 @@ import (
 // data: Mảng chứa các share (B), kết quả sẽ được ghi đè vào đây (X)
 func SolveGaussian(A [][]byte, B [][]byte) ([][]byte, error) {
 	k := len(A)
+	if k == 0 || len(B) == 0 {
+		return nil, fmt.Errorf("empty matrix or data")
+	}
 	shareSize := len(B[0])
 
 	if shareSize == frSymbolSize {
@@ -127,7 +130,11 @@ func solveGaussianFr(A [][]byte, B [][]byte) ([][]byte, error) {
 
 	for i := 0; i < k; i++ {
 		out := b[i].Bytes()
-		copy(B[i], out[:])
+		if len(B[i]) >= 32 {
+			copy(B[i], out[:])
+		} else {
+			B[i] = append([]byte(nil), out[:]...)
+		}
 	}
 
 	return B, nil

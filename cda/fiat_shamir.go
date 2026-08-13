@@ -9,24 +9,26 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 )
 
-// HashToField băm danh sách các cam kết mảnh thành một vector hệ số Fiat-Shamir trên trường Fr.
+// HashToField băm commits_root, k, và block height thành một vector hệ số Fiat-Shamir x trên trường Fr.
 // Trả về slice byte phẳng có kích thước k * 32 bytes chứa k phần tử Fr.
-func HashToField(commits [][]byte, k int) ([]byte, error) {
-	if len(commits) == 0 {
-		return nil, fmt.Errorf("commits list is empty")
+func HashToField(commitsRoot []byte, k int, height int64) ([]byte, error) {
+	if len(commitsRoot) == 0 {
+		return nil, fmt.Errorf("commitsRoot is empty")
 	}
-
-	// Ghép tất cả các cam kết lại với nhau
-	var buf bytes.Buffer
-	for _, c := range commits {
-		buf.Write(c)
+	if k <= 0 {
+		return nil, fmt.Errorf("k must be positive: %d", k)
 	}
-	data := buf.Bytes()
 
 	res := make([]byte, k*32)
 	for i := 0; i < k; i++ {
 		h := sha256.New()
-		h.Write(data)
+		h.Write(commitsRoot)
+		if err := binary.Write(h, binary.LittleEndian, uint64(k)); err != nil {
+			return nil, err
+		}
+		if err := binary.Write(h, binary.LittleEndian, uint64(height)); err != nil {
+			return nil, err
+		}
 		if err := binary.Write(h, binary.LittleEndian, uint32(i)); err != nil {
 			return nil, err
 		}
@@ -42,9 +44,9 @@ func HashToField(commits [][]byte, k int) ([]byte, error) {
 }
 
 // VerifyFiatShamir xác thực tập cam kết mảnh chống giả mạo bằng cách:
-// 1. Tính lại x' = HashToField(pieceCommits, k) và kiểm tra x' == x.
+// 1. Tính lại x' = HashToField(commitsRoot, k, height) và kiểm tra x' == x.
 // 2. Tính lại cam kết cột kết hợp sum(x_j * C_j) và kiểm tra xem có bằng columnComm hay không.
-func VerifyFiatShamir(kzg KZGProvider, pieceCommits [][]byte, x []byte, columnComm []byte) (bool, error) {
+func VerifyFiatShamir(kzg KZGProvider, pieceCommits [][]byte, commitsRoot []byte, height int64, x []byte, columnComm []byte) (bool, error) {
 	k := len(pieceCommits)
 	if k == 0 {
 		return false, fmt.Errorf("pieceCommits is empty")
@@ -53,8 +55,8 @@ func VerifyFiatShamir(kzg KZGProvider, pieceCommits [][]byte, x []byte, columnCo
 		return false, fmt.Errorf("invalid x length: got %d, expected %d", len(x), k*32)
 	}
 
-	// 1. Tính lại x' từ pieceCommits
-	xPrime, err := HashToField(pieceCommits, k)
+	// 1. Tính lại x' từ commitsRoot, k, height
+	xPrime, err := HashToField(commitsRoot, k, height)
 	if err != nil {
 		return false, err
 	}

@@ -72,7 +72,7 @@ func vectorMulAdd(dst, src []byte, coeff byte) {
 }
 
 // vectorMulAddFr thực hiện dst = dst + coeff*src trên trường Fr (BLS12-381 scalar field).
-// Hàm này dùng cho các symbol 32-byte để tương thích đại số với KZG.
+// Hàm này dùng cho các symbol Fr để tương thích đại số với KZG.
 func vectorMulAddFr(dst, src []byte, coeff byte) {
 	if coeff == 0 {
 		return
@@ -91,5 +91,35 @@ func vectorMulAddFr(dst, src []byte, coeff byte) {
 	dstEl.Add(&dstEl, &term)
 
 	out := dstEl.Bytes()
-	copy(dst, out[:])
+	if len(dst) >= 32 {
+		copy(dst, out[:])
+	} else {
+		copy(dst, out[32-len(dst):])
+	}
+}
+
+// TrimLeadingZeros strips leading 0x00 bytes from a byte slice.
+// If the slice is empty or contains only 0x00 bytes, it returns a 1-byte slice []byte{0}.
+func TrimLeadingZeros(data []byte) []byte {
+	if len(data) == 0 {
+		return []byte{0}
+	}
+	start := 0
+	for start < len(data)-1 && data[start] == 0 {
+		start++
+	}
+	res := make([]byte, len(data)-start)
+	copy(res, data[start:])
+	return res
+}
+
+// PadTo32Bytes pads a byte slice on the left with 0x00 up to 32 bytes.
+// If the slice is already 32 bytes or longer, it returns the slice directly.
+func PadTo32Bytes(data []byte) []byte {
+	if len(data) >= 32 {
+		return data
+	}
+	padded := make([]byte, 32)
+	copy(padded[32-len(data):], data)
+	return padded
 }
