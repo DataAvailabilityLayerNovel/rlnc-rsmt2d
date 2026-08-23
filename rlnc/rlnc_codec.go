@@ -204,7 +204,11 @@ func (c *RLNCCodec) RecodeWithBeta(pieces []PieceData) (PieceData, []byte, error
 		if len(pieces[i].Coeffs) != k {
 			return PieceData{}, nil, fmt.Errorf("piece %d has invalid coeff length %d, expected %d", i, len(pieces[i].Coeffs), k)
 		}
-		vectorMulAdd(newPiece, pieces[i].Data, beta[i])
+		if shareSize == frSymbolSize {
+			vectorMulAddFr(newPiece, pieces[i].Data, beta[i])
+		} else {
+			vectorMulAdd(newPiece, pieces[i].Data, beta[i])
+		}
 	}
 
 	// 3. Cập nhật ma trận hệ số toàn cục mới (Global Coefficients update)
@@ -215,9 +219,6 @@ func (c *RLNCCodec) RecodeWithBeta(pieces []PieceData) (PieceData, []byte, error
 			var sum uint16
 			for i := 0; i < n; i++ {
 				sum += uint16(beta[i]) * uint16(pieces[i].Coeffs[j])
-				if sum > 255 {
-					return PieceData{}, nil, fmt.Errorf("recode coefficient overflow at col %d: %d", j, sum)
-				}
 			}
 			newGlobalCoeffs[j] = byte(sum)
 		}
