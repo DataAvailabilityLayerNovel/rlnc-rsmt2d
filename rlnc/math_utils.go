@@ -47,23 +47,24 @@ func invGF8(a byte) byte {
 
 // vectorMulAdd tối ưu hóa: dst ^= src * coeff
 // Sử dụng bảng nhân 256 byte để tránh gọi hàm mulGF8 nhiều lần.
-func vectorMulAdd(dst, src []byte, coeff byte) {
+func vectorMulAdd(dst, src []byte, coeff uint16) {
 	if len(dst) == frSymbolSize && len(src) == frSymbolSize {
 		vectorMulAddFr(dst, src, coeff)
 		return
 	}
 
-	if coeff == 0 {
+	coeffByte := byte(coeff)
+	if coeffByte == 0 {
 		return
 	}
-	if coeff == 1 {
+	if coeffByte == 1 {
 		for i := range dst {
 			dst[i] ^= src[i]
 		}
 		return
 	}
 
-	mt := &mulTable[coeff]
+	mt := &mulTable[coeffByte]
 
 	// Vòng lặp này bây giờ cực nhanh vì chỉ có tra bảng và XOR
 	for i := range dst {
@@ -73,7 +74,7 @@ func vectorMulAdd(dst, src []byte, coeff byte) {
 
 // vectorMulAddFr thực hiện dst = dst + coeff*src trên trường Fr (BLS12-381 scalar field).
 // Hàm này dùng cho các symbol 32-byte để tương thích đại số với KZG.
-func vectorMulAddFr(dst, src []byte, coeff byte) {
+func vectorMulAddFr(dst, src []byte, coeff uint16) {
 	if coeff == 0 {
 		return
 	}

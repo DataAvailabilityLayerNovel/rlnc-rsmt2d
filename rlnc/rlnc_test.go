@@ -2,6 +2,7 @@ package rlnc
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math/rand"
 	"testing"
 
@@ -56,13 +57,14 @@ func TestRLNC_CDA_Flow(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.NotEqual(t, p1.Data, recodedPiece.Data)
-		assert.Equal(t, k, len(recodedPiece.Coeffs))
+		assert.Equal(t, 2*k, len(recodedPiece.Coeffs))
 
 		// Kiểm tra tính toán học: mảnh recode phải tương thích với hệ số toàn cục mới [cite: 158]
 		manualReconstruction := make([]byte, fragmentSize)
 		for j := 0; j < k; j++ {
-			if recodedPiece.Coeffs[j] != 0 {
-				vectorMulAdd(manualReconstruction, originalFragments[j], recodedPiece.Coeffs[j])
+			cVal := binary.BigEndian.Uint16(recodedPiece.Coeffs[j*2 : (j+1)*2])
+			if cVal != 0 {
+				vectorMulAdd(manualReconstruction, originalFragments[j], cVal)
 			}
 		}
 		assert.Equal(t, manualReconstruction, recodedPiece.Data, "Dữ liệu Recode không khớp với hệ số toàn cục")

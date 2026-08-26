@@ -1,6 +1,7 @@
 package rlnc
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
@@ -15,6 +16,16 @@ func SolveGaussian(A [][]byte, B [][]byte) ([][]byte, error) {
 
 	if shareSize == frSymbolSize {
 		return solveGaussianFr(A, B)
+	}
+
+	for i := 0; i < k; i++ {
+		if len(A[i]) == 2*k {
+			compressed := make([]byte, k)
+			for j := 0; j < k; j++ {
+				compressed[j] = byte(binary.BigEndian.Uint16(A[i][j*2 : (j+1)*2]))
+			}
+			A[i] = compressed
+		}
 	}
 
 	for i := 0; i < k; i++ {
@@ -62,7 +73,7 @@ func SolveGaussian(A [][]byte, B [][]byte) ([][]byte, error) {
 				}
 
 				// Cập nhật dữ liệu B bằng vectorMulAdd đã tối ưu
-				vectorMulAdd(B[j], B[i], factor)
+				vectorMulAdd(B[j], B[i], uint16(factor))
 			}
 		}
 	}
@@ -79,7 +90,12 @@ func solveGaussianFr(A [][]byte, B [][]byte) ([][]byte, error) {
 	for i := 0; i < k; i++ {
 		a[i] = make([]fr.Element, k)
 		for j := 0; j < k; j++ {
-			a[i][j].SetUint64(uint64(A[i][j]))
+			if len(A[i]) == 2*k {
+				cVal := binary.BigEndian.Uint16(A[i][j*2 : (j+1)*2])
+				a[i][j].SetUint64(uint64(cVal))
+			} else {
+				a[i][j].SetUint64(uint64(A[i][j]))
+			}
 		}
 		b[i].SetBytes(B[i])
 	}

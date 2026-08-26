@@ -37,13 +37,13 @@ func TestRLNC_AlgebraicLinearity(t *testing.T) {
 
 		// Calculate LHS: (A ^ B) * coeff
 		lhs := make([]byte, size)
-		vectorMulAdd(lhs, A_plus_B, coeff)
+		vectorMulAdd(lhs, A_plus_B, uint16(coeff))
 
 		// Calculate RHS: A * coeff ^ B * coeff
 		rhs_A := make([]byte, size)
-		vectorMulAdd(rhs_A, A, coeff)
+		vectorMulAdd(rhs_A, A, uint16(coeff))
 		rhs_B := make([]byte, size)
-		vectorMulAdd(rhs_B, B, coeff)
+		vectorMulAdd(rhs_B, B, uint16(coeff))
 
 		rhs := make([]byte, size)
 		for i := 0; i < size; i++ {
@@ -58,14 +58,14 @@ func TestRLNC_AlgebraicLinearity(t *testing.T) {
 
 		// LHS: alpha * (beta * A)
 		beta_A := make([]byte, size)
-		vectorMulAdd(beta_A, A, beta)
+		vectorMulAdd(beta_A, A, uint16(beta))
 		lhs_homo := make([]byte, size)
-		vectorMulAdd(lhs_homo, beta_A, alpha)
+		vectorMulAdd(lhs_homo, beta_A, uint16(alpha))
 
 		// RHS: (alpha * beta) * A
 		alpha_beta := mulGF8(alpha, beta)
 		rhs_homo := make([]byte, size)
-		vectorMulAdd(rhs_homo, A, alpha_beta)
+		vectorMulAdd(rhs_homo, A, uint16(alpha_beta))
 
 		assert.Equal(t, lhs_homo, rhs_homo, "GF(2^8) homogeneity failed")
 	})
@@ -88,13 +88,13 @@ func TestRLNC_AlgebraicLinearity(t *testing.T) {
 
 		// Calculate LHS: (A + B) * coeff
 		lhs := make([]byte, frSize)
-		vectorMulAddFr(lhs, Sum[:], coeff)
+		vectorMulAddFr(lhs, Sum[:], uint16(coeff))
 
 		// Calculate RHS: A * coeff + B * coeff
 		rhs_A := make([]byte, frSize)
-		vectorMulAddFr(rhs_A, A[:], coeff)
+		vectorMulAddFr(rhs_A, A[:], uint16(coeff))
 		rhs_B := make([]byte, frSize)
-		vectorMulAddFr(rhs_B, B[:], coeff)
+		vectorMulAddFr(rhs_B, B[:], uint16(coeff))
 
 		var elRhsA, elRhsB, elRhs fr.Element
 		elRhsA.SetBytes(rhs_A)
@@ -110,9 +110,9 @@ func TestRLNC_AlgebraicLinearity(t *testing.T) {
 
 		// LHS: alpha * (beta * A)
 		beta_A := make([]byte, frSize)
-		vectorMulAddFr(beta_A, A[:], beta)
+		vectorMulAddFr(beta_A, A[:], uint16(beta))
 		lhs_homo := make([]byte, frSize)
-		vectorMulAddFr(lhs_homo, beta_A, alpha)
+		vectorMulAddFr(lhs_homo, beta_A, uint16(alpha))
 
 		// RHS: (alpha * beta) * A
 		// Since alpha and beta are uint64 in Fr field:
@@ -163,7 +163,7 @@ func TestRLNC_GaussianElimination_Correctness(t *testing.T) {
 			B[i] = make([]byte, size)
 			for j := 0; j < k; j++ {
 				if A[i][j] != 0 {
-					vectorMulAdd(B[i], X[j], A[i][j])
+					vectorMulAdd(B[i], X[j], uint16(A[i][j]))
 				}
 			}
 		}
@@ -207,7 +207,7 @@ func TestRLNC_GaussianElimination_Correctness(t *testing.T) {
 			B[i] = make([]byte, frSize)
 			for j := 0; j < k; j++ {
 				if A[i][j] != 0 {
-					vectorMulAddFr(B[i], X[j], A[i][j])
+					vectorMulAddFr(B[i], X[j], uint16(A[i][j]))
 				}
 			}
 		}

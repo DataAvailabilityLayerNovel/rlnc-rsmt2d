@@ -196,8 +196,8 @@ func TestUnit_PublisherStoreReceiver_Recovery(t *testing.T) {
 	nodes := make([]*StorageNode, N)
 	for i := range nodes {
 		nodes[i] = storeCell(t, 0, 0, k, cellData, pProofs, kzg)
-		assert.Len(t, nodes[i].MyStoredPiece.Data.Coeffs, k,
-			"node %d: Coeffs phải có độ dài k", i)
+		assert.Len(t, nodes[i].MyStoredPiece.Data.Coeffs, 2*k,
+			"node %d: Coeffs phải có độ dài 2*k", i)
 		assert.Len(t, nodes[i].MyStoredPiece.Data.Data, cellSize/k,
 			"node %d: Data phải có kích thước mỗi fragment", i)
 	}
@@ -286,7 +286,7 @@ func TestUnit_Recode_ThenRecover(t *testing.T) {
 	recodedPiece, err := recv.RecodePieces(sourcePieces)
 	require.NoError(t, err)
 	require.NotNil(t, recodedPiece)
-	assert.Len(t, recodedPiece.Data.Coeffs, k, "recoded piece coeffs phải có độ dài k")
+	assert.Len(t, recodedPiece.Data.Coeffs, 2*k, "recoded piece coeffs phải có độ dài 2*k")
 	assert.Len(t, recodedPiece.Data.Data, cellSize/k, "recoded piece data phải có kích thước fragment")
 
 	// Receiver nhận: mảnh đã recode + k-1 mảnh gốc khác nhau
@@ -305,6 +305,13 @@ func TestUnit_Recode_ThenRecover(t *testing.T) {
 		assert.Equal(t, cellData[i*chunkSize:(i+1)*chunkSize], recovered[i],
 			"fragment %d không khớp sau Recode → Recovery", i)
 	}
+
+	// Test RecodePiecesWithVerify
+	pubComm := []byte("mock-column-commitment")
+	recodedVerified, err := recv.RecodePiecesWithVerify(sourcePieces, pubComm, 5)
+	require.NoError(t, err)
+	require.NotNil(t, recodedVerified)
+	assert.True(t, recv.VerifyPiece(*recodedVerified, pubComm))
 }
 
 // ============================================================

@@ -2,6 +2,7 @@ package cda
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 
@@ -45,8 +46,8 @@ func (g *GnarkKZG) GnarkCombine(commits []PieceCommitment, coeffs []byte) (Colum
 	if len(commits) == 0 {
 		return nil, fmt.Errorf("commits cannot be empty")
 	}
-	if len(coeffs) != len(commits) && len(coeffs) != 32*len(commits) {
-		return nil, fmt.Errorf("coeffs length (%d) does not match commits length (%d) or 32x commits length", len(coeffs), len(commits))
+	if len(coeffs) != len(commits) && len(coeffs) != 2*len(commits) && len(coeffs) != 32*len(commits) {
+		return nil, fmt.Errorf("coeffs length (%d) does not match commits length (%d), 2x (%d) or 32x commits length", len(coeffs), len(commits), 2*len(commits))
 	}
 
 	var combined bls12381.G1Affine
@@ -61,6 +62,9 @@ func (g *GnarkKZG) GnarkCombine(commits []PieceCommitment, coeffs []byte) (Colum
 		var scalar fr.Element
 		if len(coeffs) == 32*len(commits) {
 			scalar.SetBytes(coeffs[i*32 : (i+1)*32])
+		} else if len(coeffs) == 2*len(commits) {
+			cVal := binary.BigEndian.Uint16(coeffs[i*2 : (i+1)*2])
+			scalar.SetUint64(uint64(cVal))
 		} else {
 			scalar.SetInterface(int64(coeffs[i]))
 		}
@@ -81,8 +85,8 @@ func (g *GnarkKZG) GnarkCombineProofs(proofs []OpeningProof, coeffs []byte) (Ope
 	if len(proofs) == 0 {
 		return nil, fmt.Errorf("proofs cannot be empty")
 	}
-	if len(coeffs) != len(proofs) && len(coeffs) != 32*len(proofs) {
-		return nil, fmt.Errorf("coeffs length (%d) does not match proofs length (%d) or 32x proofs length", len(coeffs), len(proofs))
+	if len(coeffs) != len(proofs) && len(coeffs) != 2*len(proofs) && len(coeffs) != 32*len(proofs) {
+		return nil, fmt.Errorf("coeffs length (%d) does not match proofs length (%d), 2x (%d) or 32x proofs length", len(coeffs), len(proofs), 2*len(proofs))
 	}
 
 	var combinedH bls12381.G1Affine
@@ -98,6 +102,9 @@ func (g *GnarkKZG) GnarkCombineProofs(proofs []OpeningProof, coeffs []byte) (Ope
 		var scalar fr.Element
 		if len(coeffs) == 32*len(proofs) {
 			scalar.SetBytes(coeffs[i*32 : (i+1)*32])
+		} else if len(coeffs) == 2*len(proofs) {
+			cVal := binary.BigEndian.Uint16(coeffs[i*2 : (i+1)*2])
+			scalar.SetUint64(uint64(cVal))
 		} else {
 			scalar.SetInterface(int64(coeffs[i]))
 		}

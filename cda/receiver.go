@@ -76,6 +76,35 @@ func (m *RecipientManager) RecodePieces(pieces []ReceivedPiece) (*ReceivedPiece,
 	}, nil
 }
 
+// RecodePiecesWithVerify tạo ra mảnh recode mới và tự verify lại với cam kết cột pubComm.
+// Nếu verify thất bại, tự động sinh bộ hệ số beta ngẫu nhiên mới không tràn số và thử lại tối đa maxAttempts lần.
+func (m *RecipientManager) RecodePiecesWithVerify(pieces []ReceivedPiece, pubComm ColumnCommitment, maxAttempts int) (*ReceivedPiece, error) {
+	if len(pieces) == 0 {
+		return nil, fmt.Errorf("không có dữ liệu để recode")
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		recoded, err := m.RecodePieces(pieces)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if pubComm != nil && len(pubComm) > 0 {
+			if m.VerifyPiece(*recoded, pubComm) {
+				return recoded, nil
+			}
+			lastErr = fmt.Errorf("self-verification failed for recoded piece on attempt %d", attempt)
+		} else {
+			return recoded, nil
+		}
+	}
+	return nil, fmt.Errorf("recode failed self-verification after %d attempts: %v", maxAttempts, lastErr)
+}
+
 // RecoverCell khôi phục ô dữ liệu gốc từ k mảnh RLNC
 func (m *RecipientManager) RecoverCell(pieces []ReceivedPiece) ([][]byte, error) {
 	if len(pieces) < m.k {
