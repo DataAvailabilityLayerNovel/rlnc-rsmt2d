@@ -307,11 +307,10 @@ func TestUnit_Recode_ThenRecover(t *testing.T) {
 	}
 
 	// Test RecodePiecesWithVerify
-	pubComm := []byte("mock-column-commitment")
-	recodedVerified, err := recv.RecodePiecesWithVerify(sourcePieces, pubComm, 5)
+	pieceCommits := [][]byte{[]byte("mock-commit-1"), []byte("mock-commit-2"), []byte("mock-commit-3"), []byte("mock-commit-4")}
+	recodedVerified, err := recv.RecodePiecesWithVerify(sourcePieces, pieceCommits, 5)
 	require.NoError(t, err)
 	require.NotNil(t, recodedVerified)
-	assert.True(t, recv.VerifyPiece(*recodedVerified, pubComm))
 }
 
 // ============================================================

@@ -76,14 +76,22 @@ func (m *RecipientManager) RecodePieces(pieces []ReceivedPiece) (*ReceivedPiece,
 	}, nil
 }
 
-// RecodePiecesWithVerify tạo ra mảnh recode mới và tự verify lại với cam kết cột pubComm.
+// RecodePiecesWithVerify tạo ra mảnh recode mới và tự verify lại với cam kết cột (tải từ pieceCommits).
 // Nếu verify thất bại, tự động sinh bộ hệ số beta ngẫu nhiên mới không tràn số và thử lại tối đa maxAttempts lần.
-func (m *RecipientManager) RecodePiecesWithVerify(pieces []ReceivedPiece, pubComm ColumnCommitment, maxAttempts int) (*ReceivedPiece, error) {
+func (m *RecipientManager) RecodePiecesWithVerify(pieces []ReceivedPiece, pieceCommits [][]byte, maxAttempts int) (*ReceivedPiece, error) {
 	if len(pieces) == 0 {
 		return nil, fmt.Errorf("không có dữ liệu để recode")
 	}
 	if maxAttempts <= 0 {
 		maxAttempts = 5
+	}
+
+	var pieceCommitsTyped []PieceCommitment
+	if len(pieceCommits) > 0 {
+		pieceCommitsTyped = make([]PieceCommitment, len(pieceCommits))
+		for i, c := range pieceCommits {
+			pieceCommitsTyped[i] = PieceCommitment(c)
+		}
 	}
 
 	var lastErr error
@@ -93,8 +101,9 @@ func (m *RecipientManager) RecodePiecesWithVerify(pieces []ReceivedPiece, pubCom
 			lastErr = err
 			continue
 		}
-		if pubComm != nil && len(pubComm) > 0 {
-			if m.VerifyPiece(*recoded, pubComm) {
+		if len(pieceCommitsTyped) > 0 && m.kzg != nil {
+			pubComm, err := m.kzg.Combine(pieceCommitsTyped, recoded.Data.Coeffs)
+			if err == nil && m.VerifyPiece(*recoded, pubComm) {
 				return recoded, nil
 			}
 			lastErr = fmt.Errorf("self-verification failed for recoded piece on attempt %d", attempt)
