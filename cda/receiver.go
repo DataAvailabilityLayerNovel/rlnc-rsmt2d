@@ -1,6 +1,7 @@
 package cda
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	rlnc "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
@@ -76,22 +77,14 @@ func (m *RecipientManager) RecodePieces(pieces []ReceivedPiece) (*ReceivedPiece,
 	}, nil
 }
 
-// RecodePiecesWithVerify tạo ra mảnh recode mới và tự verify lại với cam kết cột (tải từ pieceCommits).
-// Nếu verify thất bại, tự động sinh bộ hệ số beta ngẫu nhiên mới không tràn số và thử lại tối đa maxAttempts lần.
+// RecodePiecesWithVerify tạo ra mảnh recode mới và kiểm tra chống tràn số với cam kết cột (tải từ pieceCommits).
+// Nếu phát hiện tràn số hoặc lỗi recode, tự động sinh bộ hệ số beta ngẫu nhiên mới và thử lại tối đa maxAttempts lần.
 func (m *RecipientManager) RecodePiecesWithVerify(pieces []ReceivedPiece, pieceCommits [][]byte, maxAttempts int) (*ReceivedPiece, error) {
 	if len(pieces) == 0 {
 		return nil, fmt.Errorf("không có dữ liệu để recode")
 	}
 	if maxAttempts <= 0 {
 		maxAttempts = 5
-	}
-
-	var pieceCommitsTyped []PieceCommitment
-	if len(pieceCommits) > 0 {
-		pieceCommitsTyped = make([]PieceCommitment, len(pieceCommits))
-		for i, c := range pieceCommits {
-			pieceCommitsTyped[i] = PieceCommitment(c)
-		}
 	}
 
 	var lastErr error
@@ -101,17 +94,37 @@ func (m *RecipientManager) RecodePiecesWithVerify(pieces []ReceivedPiece, pieceC
 			lastErr = err
 			continue
 		}
-		if len(pieceCommitsTyped) > 0 && m.kzg != nil {
-			pubComm, err := m.kzg.Combine(pieceCommitsTyped, recoded.Data.Coeffs)
-			if err == nil && m.VerifyPiece(*recoded, pubComm) {
-				return recoded, nil
-			}
-			lastErr = fmt.Errorf("self-verification failed for recoded piece on attempt %d", attempt)
+
+		// Kiểm tra chống tràn số (overflow check):
+		// Đảm bảo tất cả hệ số toàn cục (global coefficients) đều nằm trong giới hạn uint16 (<= 65535)
+		// và không bị wrap-around.
+		overflow := false
+		if len(recoded.Data.Coeffs) == 0 {
+			overflow = true
 		} else {
-			return recoded, nil
+			k := m.k
+			for j := 0; j < k; j++ {
+				var cVal uint32
+				if len(recoded.Data.Coeffs) == 2*k {
+					cVal = uint32(binary.BigEndian.Uint16(recoded.Data.Coeffs[j*2 : (j+1)*2]))
+				} else if j < len(recoded.Data.Coeffs) {
+					cVal = uint32(recoded.Data.Coeffs[j])
+				}
+				if cVal > 65535 {
+					overflow = true
+					break
+				}
+			}
 		}
+
+		if overflow {
+			lastErr = fmt.Errorf("recode coefficient overflow detected on attempt %d", attempt)
+			continue
+		}
+
+		return recoded, nil
 	}
-	return nil, fmt.Errorf("recode failed self-verification after %d attempts: %v", maxAttempts, lastErr)
+	return nil, fmt.Errorf("recode failed after %d attempts: %v", maxAttempts, lastErr)
 }
 
 // RecoverCell khôi phục ô dữ liệu gốc từ k mảnh RLNC

@@ -163,3 +163,43 @@ func (g *GnarkKZG) GnarkVerify(commit []byte, row int, data []byte, proof Openin
 	err := kzg.Verify(&digest, openingProof, z, g.srs.Vk)
 	return err == nil
 }
+
+// GnarkBatchVerify xác thực đồng thời nhiều mảnh bằng Random Linear Combination (Batch KZG Verification).
+// Thuật toán giảm từ 2*N pairings xuống đúng 2 pairings bằng cách tổ hợp ngẫu nhiên.
+func (g *GnarkKZG) GnarkBatchVerify(items []BatchVerifyItem) bool {
+	if len(items) == 0 {
+		return true
+	}
+	if len(items) == 1 {
+		return g.GnarkVerify(items[0].Commitment, items[0].Row, items[0].Data, items[0].Proof)
+	}
+
+	digests := make([]kzg.Digest, len(items))
+	proofs := make([]kzg.OpeningProof, len(items))
+	points := make([]fr.Element, len(items))
+
+	for i, item := range items {
+		if item.Row < 0 || len(item.Commitment) == 0 || len(item.Proof) == 0 || len(item.Data) == 0 {
+			return false
+		}
+
+		if err := digests[i].Unmarshal(item.Commitment); err != nil {
+			return false
+		}
+
+		if _, err := proofs[i].ReadFrom(bytes.NewReader(item.Proof)); err != nil {
+			return false
+		}
+
+		var val fr.Element
+		val.SetBytes(item.Data)
+		if !proofs[i].ClaimedValue.Equal(&val) {
+			return false
+		}
+
+		points[i].SetInterface(int64(item.Row))
+	}
+
+	err := kzg.BatchVerifyMultiPoints(digests, proofs, points, g.srs.Vk)
+	return err == nil
+}

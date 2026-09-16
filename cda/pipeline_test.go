@@ -73,6 +73,10 @@ func (m *mockKZG) Verify(commit []byte, row int, data []byte, proof OpeningProof
 	return true
 }
 
+func (m *mockKZG) BatchVerify(items []BatchVerifyItem) bool {
+	return true
+}
+
 // ============================================================
 // Helpers
 // ============================================================

@@ -159,3 +159,98 @@ func TestRecodedPieceKZGVerificationMultiRound(t *testing.T) {
 	}
 	t.Logf("All 100 multi-generation rounds with rm.RecodePieces passed KZG verification perfectly!")
 }
+
+func TestGnarkBatchVerify(t *testing.T) {
+	kPiece := 4
+	n := 16
+	frSize := 32
+	rowIdx := 3
+
+	columnData := make([][]byte, n)
+	for r := 0; r < n; r++ {
+		columnData[r] = make([]byte, kPiece*frSize)
+		for j := 0; j < kPiece; j++ {
+			var elem fr.Element
+			elem.SetRandom()
+			b := elem.Bytes()
+			copy(columnData[r][j*frSize:(j+1)*frSize], b[:])
+		}
+	}
+
+	srs, err := bls12381kzg.NewSRS(1024, big.NewInt(-1))
+	require.NoError(t, err)
+	kzgProvider := NewGnarkKZG(*srs)
+
+	// 1. Piece commitments
+	pieceCommits := make([]PieceCommitment, kPiece)
+	for j := 0; j < kPiece; j++ {
+		pieceCol := make([][]byte, n)
+		for r := 0; r < n; r++ {
+			pieceCol[r] = columnData[r][j*frSize : (j+1)*frSize]
+		}
+		commit, err := kzgProvider.Commit(pieceCol)
+		require.NoError(t, err)
+		pieceCommits[j] = commit
+	}
+
+	// 2. Opening proofs for fragments
+	var point fr.Element
+	point.SetInterface(int64(rowIdx))
+	openingProofs := make([]OpeningProof, kPiece)
+	for j := 0; j < kPiece; j++ {
+		scalars := make([]fr.Element, n)
+		for r := 0; r < n; r++ {
+			scalars[r].SetBytes(columnData[r][j*frSize : (j+1)*frSize])
+		}
+		proof, err := bls12381kzg.Open(scalars, point, srs.Pk)
+		require.NoError(t, err)
+		var out bytes.Buffer
+		_, err = proof.WriteTo(&out)
+		require.NoError(t, err)
+		openingProofs[j] = out.Bytes()
+	}
+
+	fragments := make([][]byte, kPiece)
+	for j := 0; j < kPiece; j++ {
+		fragments[j] = evaluatePieceCol(columnData, j, rowIdx, kPiece, frSize)
+	}
+
+	// Generate batch items
+	var batchItems []BatchVerifyItem
+	for p := 0; p < kPiece; p++ {
+		coeffs := make([]byte, 2*kPiece)
+		for i := 0; i < kPiece; i++ {
+			binary.BigEndian.PutUint16(coeffs[i*2:(i+1)*2], uint16(p*kPiece+i+1))
+		}
+
+		codedData := make([]byte, 32)
+		for j := 0; j < kPiece; j++ {
+			cVal := binary.BigEndian.Uint16(coeffs[j*2 : (j+1)*2])
+			vectorMulAddFrTest(codedData, fragments[j], cVal)
+		}
+
+		combinedProof, err := kzgProvider.CombineProofs(openingProofs, coeffs)
+		require.NoError(t, err)
+
+		combinedCommit, err := kzgProvider.Combine(pieceCommits, coeffs)
+		require.NoError(t, err)
+
+		batchItems = append(batchItems, BatchVerifyItem{
+			Commitment: combinedCommit,
+			Row:        rowIdx,
+			Data:       codedData,
+			Proof:      combinedProof,
+		})
+	}
+
+	// Test valid batch
+	ok := kzgProvider.BatchVerify(batchItems)
+	require.True(t, ok, "BatchVerify should succeed for valid items")
+
+	// Test corrupted batch item
+	tamperedItems := make([]BatchVerifyItem, len(batchItems))
+	copy(tamperedItems, batchItems)
+	tamperedItems[1].Data = make([]byte, len(batchItems[1].Data)) // corrupted data
+	okTampered := kzgProvider.BatchVerify(tamperedItems)
+	require.False(t, okTampered, "BatchVerify should fail on tampered data")
+}

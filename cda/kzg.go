@@ -14,6 +14,13 @@ type ColumnCommitment []byte
 // OpeningProof đại diện cho bằng chứng mở KZG (KZG opening proof)
 type OpeningProof []byte
 
+type BatchVerifyItem struct {
+	Commitment []byte
+	Row        int
+	Data       []byte
+	Proof      OpeningProof
+}
+
 // KZGProvider giả định các hàm xử lý mật mã cơ bản
 type KZGProvider interface {
 	// Commit tạo cam kết cho một mảng các byte (cột dữ liệu mảnh)
@@ -24,6 +31,8 @@ type KZGProvider interface {
 	CombineProofs(proofs []OpeningProof, coeffs []byte) (OpeningProof, error)
 	// Verify xác thực một mảnh với cam kết (mảnh hoặc cột tổ hợp) tương ứng và proof tương ứng
 	Verify(commit []byte, row int, data []byte, proof OpeningProof) bool
+	// BatchVerify xác thực đồng thời nhiều mảnh bằng Random Linear Combination (Batch KZG Verification)
+	BatchVerify(items []BatchVerifyItem) bool
 }
 
 type CDACommitmentManager struct {
@@ -97,4 +106,8 @@ func (g *GnarkKZG) CombineProofs(proofs []OpeningProof, coeffs []byte) (OpeningP
 
 func (g *GnarkKZG) Verify(commit []byte, row int, data []byte, proof OpeningProof) bool {
 	return g.GnarkVerify(commit, row, data, proof)
+}
+
+func (g *GnarkKZG) BatchVerify(items []BatchVerifyItem) bool {
+	return g.GnarkBatchVerify(items)
 }
