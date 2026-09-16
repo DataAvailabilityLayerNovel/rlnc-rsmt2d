@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math/big"
+	"sync"
 
 	rsmt2d "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d"
 	rlnc "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
@@ -195,14 +196,29 @@ func ComputeAndSetKateCommitments(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDat
 
 	columnCommits := make([]ColumnCommitment, n)
 	coeffss := make([][]byte, n)
+	var colWg sync.WaitGroup
+	var colOnce sync.Once
+	var colErr error
+
 	for col := 0; col < n; col++ {
-		start := col * k
-		combined, err := kzg.Combine(pieceCommits[start:start+k], globalCoeffs)
-		if err != nil {
-			return nil, fmt.Errorf("combine commitments for column %d: %w", col, err)
-		}
-		columnCommits[col] = append([]byte(nil), combined...)
-		coeffss[col] = append([]byte(nil), globalCoeffs...)
+		colWg.Add(1)
+		go func(c int) {
+			defer colWg.Done()
+			start := c * k
+			combined, err := kzg.Combine(pieceCommits[start:start+k], globalCoeffs)
+			if err != nil {
+				colOnce.Do(func() {
+					colErr = fmt.Errorf("combine commitments for column %d: %w", c, err)
+				})
+				return
+			}
+			columnCommits[c] = append([]byte(nil), combined...)
+			coeffss[c] = append([]byte(nil), globalCoeffs...)
+		}(col)
+	}
+	colWg.Wait()
+	if colErr != nil {
+		return nil, colErr
 	}
 	colAsBytes := make([][]byte, len(columnCommits))
 	for i := range columnCommits {

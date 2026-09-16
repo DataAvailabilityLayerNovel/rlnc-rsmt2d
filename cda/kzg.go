@@ -1,6 +1,9 @@
 package cda
 
 import (
+	"runtime"
+	"sync"
+
 	rsmt2d "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d"
 	rlnc "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
 )
@@ -55,20 +58,42 @@ func (m *CDACommitmentManager) CommitEDS(eds *rsmt2d.ExtendedDataSquare) ([]Piec
 	totalPieceCols := n * m.k
 	allCommits := make([]PieceCommitment, totalPieceCols)
 
-	// Duyệt qua từng siêu cột (tương ứng với 1 cột trong EDS gốc)
-	for colIdx := 0; colIdx < n; colIdx++ {
-		fullCol := eds.Col(uint(colIdx))
+	nWorkers := runtime.NumCPU()
+	if nWorkers > 16 {
+		nWorkers = 16
+	} else if nWorkers < 1 {
+		nWorkers = 1
+	}
 
-		// Chia cột này thành k cột mảnh
-		// Mỗi cột mảnh chứa 1 phần của mỗi cell trong cột đó
-		pieceCols := m.splitColumnToPieces(fullCol)
-		for j := 0; j < m.k; j++ {
-			commit, err := m.kzg.Commit(pieceCols[j])
-			if err != nil {
-				return nil, err
+	sem := make(chan struct{}, nWorkers)
+	var wg sync.WaitGroup
+	var once sync.Once
+	var firstErr error
+
+	// Duyệt qua từng siêu cột song song trên các worker
+	for colIdx := 0; colIdx < n; colIdx++ {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(col int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			fullCol := eds.Col(uint(col))
+			pieceCols := m.splitColumnToPieces(fullCol)
+			for j := 0; j < m.k; j++ {
+				commit, err := m.kzg.Commit(pieceCols[j])
+				if err != nil {
+					once.Do(func() { firstErr = err })
+					return
+				}
+				allCommits[col*m.k+j] = commit
 			}
-			allCommits[colIdx*m.k+j] = commit
-		}
+		}(colIdx)
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	return allCommits, nil
 }
