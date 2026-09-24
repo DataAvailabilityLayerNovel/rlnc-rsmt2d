@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/kzg"
@@ -27,7 +28,7 @@ func (g *GnarkKZG) GnarkCommit(data [][]byte) (PieceCommitment, error) {
 	// Trong CDA, mỗi cột mảnh được nội suy thành một đa thức [cite: 138, 221]
 	scalars := make([]fr.Element, len(data))
 	for i, d := range data {
-		scalars[i].SetBytes(d)
+		scalars[i] = rlnc.FoldMultiScalar(d)
 	}
 
 	// 2. Tính toán cam kết bằng cách sử dụng SRS
@@ -140,9 +141,8 @@ func (g *GnarkKZG) GnarkVerify(commit []byte, row int, data []byte, proof Openin
 		return false
 	}
 
-	// 1. Chuyển giá trị mảnh dữ liệu thành Scalar (y)
-	var val fr.Element
-	val.SetBytes(data)
+	// 1. Chuyển giá trị mảnh dữ liệu thành Scalar (y) qua FoldMultiScalar
+	val := rlnc.FoldMultiScalar(data)
 
 	// 2. Điểm đánh giá (z) tương ứng với chỉ số hàng trong ma trận [cite: 188]
 	var z fr.Element
@@ -191,8 +191,7 @@ func (g *GnarkKZG) GnarkBatchVerify(items []BatchVerifyItem) bool {
 			return false
 		}
 
-		var val fr.Element
-		val.SetBytes(item.Data)
+		val := rlnc.FoldMultiScalar(item.Data)
 		if !proofs[i].ClaimedValue.Equal(&val) {
 			return false
 		}

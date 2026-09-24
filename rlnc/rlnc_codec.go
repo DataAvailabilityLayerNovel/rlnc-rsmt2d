@@ -183,8 +183,8 @@ func randInt(max int) int {
 	return int(binary.BigEndian.Uint16(b[:])) % max
 }
 
-// RecodeWithBeta trả về thêm vector beta nội bộ để tầng trên có thể tổ hợp proof.
-func (c *RLNCCodec) RecodeWithBeta(pieces []PieceData) (PieceData, []byte, error) {
+// RecodeWithBetaFr performs BLS12-381 Fr-aligned RLNC recoding supporting arbitrary-sized multi-scalar pieces.
+func (c *RLNCCodec) RecodeWithBetaFr(pieces []PieceData) (PieceData, []byte, error) {
 	n := len(pieces)
 	if n < 2 {
 		return PieceData{}, nil, fmt.Errorf("recode requires at least 2 pieces to avoid linear dependence, got %d", n)
@@ -192,162 +192,165 @@ func (c *RLNCCodec) RecodeWithBeta(pieces []PieceData) (PieceData, []byte, error
 	k := c.maxChunks
 	shareSize := len(pieces[0].Data)
 
-	if shareSize == frSymbolSize {
-		// BLS12-381 Fr-aligned RLNC recoding:
-		// Select 2 pieces with the lowest maximum coefficients to strictly avoid uint16 overflow
-		// (sum_j = beta_A * c_A,j + beta_B * c_B,j <= 65535).
-		type pieceScore struct {
-			idx      int
-			maxCoeff uint32
+	type pieceScore struct {
+		idx      int
+		maxCoeff uint32
+	}
+	scores := make([]pieceScore, n)
+	for i := 0; i < n; i++ {
+		if len(pieces[i].Data) != shareSize {
+			return PieceData{}, nil, fmt.Errorf("piece %d has inconsistent data size", i)
 		}
-		scores := make([]pieceScore, n)
-		for i := 0; i < n; i++ {
-			if len(pieces[i].Data) != shareSize {
-				return PieceData{}, nil, fmt.Errorf("piece %d has inconsistent data size", i)
-			}
-			if len(pieces[i].Coeffs) != 2*k && len(pieces[i].Coeffs) != k {
-				return PieceData{}, nil, fmt.Errorf("piece %d has invalid coeff length %d, expected %d", i, len(pieces[i].Coeffs), 2*k)
-			}
-			var maxC uint32
-			for j := 0; j < k; j++ {
-				var cVal uint32
-				if len(pieces[i].Coeffs) == 2*k {
-					cVal = uint32(binary.BigEndian.Uint16(pieces[i].Coeffs[j*2 : (j+1)*2]))
-				} else {
-					cVal = uint32(pieces[i].Coeffs[j])
-				}
-				if cVal > maxC {
-					maxC = cVal
-				}
-			}
-			scores[i] = pieceScore{idx: i, maxCoeff: maxC}
+		if len(pieces[i].Coeffs) != 2*k && len(pieces[i].Coeffs) != k {
+			return PieceData{}, nil, fmt.Errorf("piece %d has invalid coeff length %d, expected %d", i, len(pieces[i].Coeffs), 2*k)
 		}
-
-		// Sort pieces ascending by maxCoeff
-		for i := 0; i < n; i++ {
-			for j := i + 1; j < n; j++ {
-				if scores[j].maxCoeff < scores[i].maxCoeff {
-					scores[i], scores[j] = scores[j], scores[i]
-				}
+		var maxC uint32
+		for j := 0; j < k; j++ {
+			var cVal uint32
+			if len(pieces[i].Coeffs) == 2*k {
+				cVal = uint32(binary.BigEndian.Uint16(pieces[i].Coeffs[j*2 : (j+1)*2]))
+			} else {
+				cVal = uint32(pieces[i].Coeffs[j])
+			}
+			if cVal > maxC {
+				maxC = cVal
 			}
 		}
+		scores[i] = pieceScore{idx: i, maxCoeff: maxC}
+	}
 
-		var idxA, idxB int
-		var betaA, betaB uint16
-		found := false
-
-		numCandidates := 4
-		if numCandidates > n {
-			numCandidates = n
+	for i := 0; i < n; i++ {
+		for j := i + 1; j < n; j++ {
+			if scores[j].maxCoeff < scores[i].maxCoeff {
+				scores[i], scores[j] = scores[j], scores[i]
+			}
 		}
+	}
 
-		// Try random combinations of top candidate pieces with small beta
-		for attempt := 0; attempt < 50; attempt++ {
-			i1 := randInt(numCandidates)
-			i2 := randInt(numCandidates)
-			if i1 == i2 {
-				i2 = (i1 + 1) % numCandidates
+	var idxA, idxB int
+	var betaA, betaB uint16
+	found := false
+
+	numCandidates := 4
+	if numCandidates > n {
+		numCandidates = n
+	}
+
+	for attempt := 0; attempt < 50; attempt++ {
+		i1 := randInt(numCandidates)
+		i2 := randInt(numCandidates)
+		if i1 == i2 {
+			i2 = (i1 + 1) % numCandidates
+		}
+		candA := scores[i1].idx
+		candB := scores[i2].idx
+
+		bA := uint16(randInt(3) + 1)
+		bB := uint16(randInt(3) + 1)
+
+		overflow := false
+		for j := 0; j < k; j++ {
+			var cA, cB uint32
+			if len(pieces[candA].Coeffs) == 2*k {
+				cA = uint32(binary.BigEndian.Uint16(pieces[candA].Coeffs[j*2 : (j+1)*2]))
+			} else {
+				cA = uint32(pieces[candA].Coeffs[j])
 			}
-			candA := scores[i1].idx
-			candB := scores[i2].idx
-
-			bA := uint16(randInt(3) + 1)
-			bB := uint16(randInt(3) + 1)
-
-			overflow := false
-			for j := 0; j < k; j++ {
-				var cA, cB uint32
-				if len(pieces[candA].Coeffs) == 2*k {
-					cA = uint32(binary.BigEndian.Uint16(pieces[candA].Coeffs[j*2 : (j+1)*2]))
-				} else {
-					cA = uint32(pieces[candA].Coeffs[j])
-				}
-				if len(pieces[candB].Coeffs) == 2*k {
-					cB = uint32(binary.BigEndian.Uint16(pieces[candB].Coeffs[j*2 : (j+1)*2]))
-				} else {
-					cB = uint32(pieces[candB].Coeffs[j])
-				}
-				if uint32(bA)*cA+uint32(bB)*cB > 65535 {
-					overflow = true
-					break
-				}
+			if len(pieces[candB].Coeffs) == 2*k {
+				cB = uint32(binary.BigEndian.Uint16(pieces[candB].Coeffs[j*2 : (j+1)*2]))
+			} else {
+				cB = uint32(pieces[candB].Coeffs[j])
 			}
-
-			if !overflow {
-				idxA, idxB = candA, candB
-				betaA, betaB = bA, bB
-				found = true
+			if uint32(bA)*cA+uint32(bB)*cB > 65535 {
+				overflow = true
 				break
 			}
 		}
 
-		// Fallback: minimal beta (1, 1) on the 2 lowest-coefficient pieces
-		if !found {
-			candA := scores[0].idx
-			candB := scores[1].idx
-			overflow := false
-			for j := 0; j < k; j++ {
-				var cA, cB uint32
-				if len(pieces[candA].Coeffs) == 2*k {
-					cA = uint32(binary.BigEndian.Uint16(pieces[candA].Coeffs[j*2 : (j+1)*2]))
-				} else {
-					cA = uint32(pieces[candA].Coeffs[j])
-				}
-				if len(pieces[candB].Coeffs) == 2*k {
-					cB = uint32(binary.BigEndian.Uint16(pieces[candB].Coeffs[j*2 : (j+1)*2]))
-				} else {
-					cB = uint32(pieces[candB].Coeffs[j])
-				}
-				if cA+cB > 65535 {
-					overflow = true
-					break
-				}
-			}
-			if !overflow {
-				idxA, idxB = candA, candB
-				betaA, betaB = 1, 1
-				found = true
-			}
+		if !overflow {
+			idxA, idxB = candA, candB
+			betaA, betaB = bA, bB
+			found = true
+			break
 		}
+	}
 
-		if !found {
-			return PieceData{}, nil, fmt.Errorf("recode failed: coefficients sum exceeds uint16 bound (65535)")
-		}
-
-		// Construct sparse beta vector of length n (non-selected pieces have beta=0)
-		beta := make([]uint16, n)
-		beta[idxA] = betaA
-		beta[idxB] = betaB
-
-		betaBytes := make([]byte, 2*n)
-		for i := 0; i < n; i++ {
-			binary.BigEndian.PutUint16(betaBytes[i*2:], beta[i])
-		}
-
-		// 2. Compute new data piece over Fr: C_new = betaA * C_A + betaB * C_B
-		newPiece := make([]byte, shareSize)
-		vectorMulAddFr(newPiece, pieces[idxA].Data, betaA)
-		vectorMulAddFr(newPiece, pieces[idxB].Data, betaB)
-
-		// 3. Compute new global coefficients: gamma_j = betaA * alpha_A,j + betaB * alpha_B,j
-		newGlobalCoeffs := make([]byte, 2*k)
+	if !found {
+		candA := scores[0].idx
+		candB := scores[1].idx
+		overflow := false
 		for j := 0; j < k; j++ {
 			var cA, cB uint32
-			if len(pieces[idxA].Coeffs) == 2*k {
-				cA = uint32(binary.BigEndian.Uint16(pieces[idxA].Coeffs[j*2 : (j+1)*2]))
+			if len(pieces[candA].Coeffs) == 2*k {
+				cA = uint32(binary.BigEndian.Uint16(pieces[candA].Coeffs[j*2 : (j+1)*2]))
 			} else {
-				cA = uint32(pieces[idxA].Coeffs[j])
+				cA = uint32(pieces[candA].Coeffs[j])
 			}
-			if len(pieces[idxB].Coeffs) == 2*k {
-				cB = uint32(binary.BigEndian.Uint16(pieces[idxB].Coeffs[j*2 : (j+1)*2]))
+			if len(pieces[candB].Coeffs) == 2*k {
+				cB = uint32(binary.BigEndian.Uint16(pieces[candB].Coeffs[j*2 : (j+1)*2]))
 			} else {
-				cB = uint32(pieces[idxB].Coeffs[j])
+				cB = uint32(pieces[candB].Coeffs[j])
 			}
-			sum := uint32(betaA)*cA + uint32(betaB)*cB
-			binary.BigEndian.PutUint16(newGlobalCoeffs[j*2:], uint16(sum))
+			if cA+cB > 65535 {
+				overflow = true
+				break
+			}
 		}
+		if !overflow {
+			idxA, idxB = candA, candB
+			betaA, betaB = 1, 1
+			found = true
+		}
+	}
 
-		return PieceData{Data: newPiece, Coeffs: newGlobalCoeffs}, betaBytes, nil
+	if !found {
+		return PieceData{}, nil, fmt.Errorf("recode failed: coefficients sum exceeds uint16 bound (65535)")
+	}
+
+	beta := make([]uint16, n)
+	beta[idxA] = betaA
+	beta[idxB] = betaB
+
+	betaBytes := make([]byte, 2*n)
+	for i := 0; i < n; i++ {
+		binary.BigEndian.PutUint16(betaBytes[i*2:], beta[i])
+	}
+
+	newPiece := make([]byte, shareSize)
+	VectorMulAddFr(newPiece, pieces[idxA].Data, betaA)
+	VectorMulAddFr(newPiece, pieces[idxB].Data, betaB)
+
+	newGlobalCoeffs := make([]byte, 2*k)
+	for j := 0; j < k; j++ {
+		var cA, cB uint32
+		if len(pieces[idxA].Coeffs) == 2*k {
+			cA = uint32(binary.BigEndian.Uint16(pieces[idxA].Coeffs[j*2 : (j+1)*2]))
+		} else {
+			cA = uint32(pieces[idxA].Coeffs[j])
+		}
+		if len(pieces[idxB].Coeffs) == 2*k {
+			cB = uint32(binary.BigEndian.Uint16(pieces[idxB].Coeffs[j*2 : (j+1)*2]))
+		} else {
+			cB = uint32(pieces[idxB].Coeffs[j])
+		}
+		sum := uint32(betaA)*cA + uint32(betaB)*cB
+		binary.BigEndian.PutUint16(newGlobalCoeffs[j*2:], uint16(sum))
+	}
+
+	return PieceData{Data: newPiece, Coeffs: newGlobalCoeffs}, betaBytes, nil
+}
+
+// RecodeWithBeta trả về thêm vector beta nội bộ để tầng trên có thể tổ hợp proof.
+func (c *RLNCCodec) RecodeWithBeta(pieces []PieceData) (PieceData, []byte, error) {
+	n := len(pieces)
+	if n < 2 {
+		return PieceData{}, nil, fmt.Errorf("recode requires at least 2 pieces to avoid linear dependence, got %d", n)
+	}
+	shareSize := len(pieces[0].Data)
+	k := c.maxChunks
+
+	if shareSize == frSymbolSize {
+		return c.RecodeWithBetaFr(pieces)
 	}
 
 	// GF(2^8) branch for non-Fr symbols

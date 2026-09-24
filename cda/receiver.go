@@ -51,7 +51,7 @@ func (m *RecipientManager) RecodePieces(pieces []ReceivedPiece) (*ReceivedPiece,
 
 	// 2. Thực hiện Recode dữ liệu và vector hệ số toàn cục (Global Coeffs)
 	// Giả sử hàm Recode trả về mảnh mới và vector hệ số nội bộ (beta) để tổ hợp Proof
-	newPiece, beta, err := m.codec.RecodeWithBeta(rlncPieces)
+	newPiece, beta, err := m.codec.RecodeWithBetaFr(rlncPieces)
 	if err != nil {
 		return nil, err
 	}

@@ -1,8 +1,85 @@
 package rlnc
 
-import "github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
+import (
+	"sync"
+
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
+)
 
 const frSymbolSize = 32
+
+const maxPrecomputedGammaPowers = 64
+
+var (
+	multiScalarGamma       fr.Element
+	multiScalarGammaPowers [maxPrecomputedGammaPowers]fr.Element
+	multiScalarGammaOnce   sync.Once
+)
+
+func initMultiScalarGamma() {
+	multiScalarGammaOnce.Do(func() {
+		multiScalarGamma.SetString("725537576575775767")
+		multiScalarGammaPowers[0].SetOne()
+		for i := 1; i < maxPrecomputedGammaPowers; i++ {
+			multiScalarGammaPowers[i].Mul(&multiScalarGammaPowers[i-1], &multiScalarGamma)
+		}
+	})
+}
+
+// GetMultiScalarGamma returns a deterministic generator in Fr for multi-scalar folding.
+func GetMultiScalarGamma() fr.Element {
+	initMultiScalarGamma()
+	return multiScalarGamma
+}
+
+// GetMultiScalarGammaPower returns gamma^power for a given index.
+func GetMultiScalarGammaPower(power int) fr.Element {
+	initMultiScalarGamma()
+	if power >= 0 && power < maxPrecomputedGammaPowers {
+		return multiScalarGammaPowers[power]
+	}
+	var res fr.Element
+	res.SetOne()
+	for i := 0; i < power; i++ {
+		res.Mul(&res, &multiScalarGamma)
+	}
+	return res
+}
+
+// FoldMultiScalar folds an arbitrary-length byte slice into a single Fr scalar
+// using precomputed powers of gamma: Fold(D) = sum_{m=0}^{M-1} gamma^m * D[m].
+// If len(data) <= 32, it converts directly to a single Fr element (100% backward compatible).
+func FoldMultiScalar(data []byte) fr.Element {
+	if len(data) <= 32 {
+		var el fr.Element
+		el.SetBytes(data)
+		return el
+	}
+
+	initMultiScalarGamma()
+	var folded fr.Element
+	var chunkEl fr.Element
+	var term fr.Element
+
+	chunkIdx := 0
+	for offset := 0; offset < len(data); offset += 32 {
+		end := offset + 32
+		if end > len(data) {
+			end = len(data)
+		}
+		chunkEl.SetBytes(data[offset:end])
+		if chunkIdx < maxPrecomputedGammaPowers {
+			term.Mul(&chunkEl, &multiScalarGammaPowers[chunkIdx])
+		} else {
+			p := GetMultiScalarGammaPower(chunkIdx)
+			term.Mul(&chunkEl, &p)
+		}
+		folded.Add(&folded, &term)
+		chunkIdx++
+	}
+
+	return folded
+}
 
 // Bảng Log và Exp cho GF(2^8) với đa thức tối giản 0x11d (thường dùng trong AES/Networking)
 var logTable [256]byte
@@ -31,25 +108,30 @@ func init() {
 	}
 }
 
+// mulGF8 nhân hai số trong GF(2^8)
 func mulGF8(a, b byte) byte {
 	if a == 0 || b == 0 {
 		return 0
 	}
-	return expTable[uint16(logTable[a])+uint16(logTable[b])]
+	return expTable[int(logTable[a])+int(logTable[b])]
 }
 
+// invGF8 tìm nghịch đảo nhân trong GF(2^8) (a * inv = 1)
 func invGF8(a byte) byte {
 	if a == 0 {
-		panic("Chia cho 0")
+		panic("chia cho 0 trong GF(2^8)")
 	}
 	return expTable[255-logTable[a]]
 }
 
-// vectorMulAdd tối ưu hóa: dst ^= src * coeff
-// Sử dụng bảng nhân 256 byte để tránh gọi hàm mulGF8 nhiều lần.
+// VectorMulAdd tối ưu hóa: dst ^= src * coeff trên GF(2^8)
+func VectorMulAdd(dst, src []byte, coeff uint16) {
+	vectorMulAdd(dst, src, coeff)
+}
+
 func vectorMulAdd(dst, src []byte, coeff uint16) {
 	if len(dst) == frSymbolSize && len(src) == frSymbolSize {
-		vectorMulAddFr(dst, src, coeff)
+		VectorMulAddFr(dst, src, coeff)
 		return
 	}
 
@@ -65,32 +147,50 @@ func vectorMulAdd(dst, src []byte, coeff uint16) {
 	}
 
 	mt := &mulTable[coeffByte]
-
-	// Vòng lặp này bây giờ cực nhanh vì chỉ có tra bảng và XOR
 	for i := range dst {
 		dst[i] ^= mt[src[i]]
 	}
 }
 
-// vectorMulAddFr thực hiện dst = dst + coeff*src trên trường Fr (BLS12-381 scalar field).
-// Hàm này dùng cho các symbol 32-byte để tương thích đại số với KZG.
-func vectorMulAddFr(dst, src []byte, coeff uint16) {
+// VectorMulAddFr thực hiện dst = dst + coeff*src trên trường Fr (BLS12-381 scalar field).
+// Hỗ trợ multi-scalar chunking bằng cách duyệt qua tất cả các chunk 32-byte.
+func VectorMulAddFr(dst, src []byte, coeff uint16) {
 	if coeff == 0 {
 		return
 	}
 
-	var dstEl fr.Element
-	var srcEl fr.Element
 	var coeffEl fr.Element
-	var term fr.Element
-
-	dstEl.SetBytes(dst)
-	srcEl.SetBytes(src)
 	coeffEl.SetUint64(uint64(coeff))
 
-	term.Mul(&srcEl, &coeffEl)
-	dstEl.Add(&dstEl, &term)
+	var dstEl fr.Element
+	var srcEl fr.Element
+	var term fr.Element
 
-	out := dstEl.Bytes()
-	copy(dst, out[:])
+	chunkSize := 32
+	for offset := 0; offset < len(dst); offset += chunkSize {
+		end := offset + chunkSize
+		if end > len(dst) {
+			end = len(dst)
+		}
+		dstEl.SetBytes(dst[offset:end])
+		if offset < len(src) {
+			srcEnd := offset + chunkSize
+			if srcEnd > len(src) {
+				srcEnd = len(src)
+			}
+			srcEl.SetBytes(src[offset:srcEnd])
+		} else {
+			srcEl.SetZero()
+		}
+
+		term.Mul(&srcEl, &coeffEl)
+		dstEl.Add(&dstEl, &term)
+
+		out := dstEl.Bytes()
+		copy(dst[offset:end], out[32-(end-offset):])
+	}
+}
+
+func vectorMulAddFr(dst, src []byte, coeff uint16) {
+	VectorMulAddFr(dst, src, coeff)
 }

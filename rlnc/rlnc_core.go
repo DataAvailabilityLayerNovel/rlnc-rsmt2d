@@ -12,6 +12,9 @@ import (
 // data: Mảng chứa các share (B), kết quả sẽ được ghi đè vào đây (X)
 func SolveGaussian(A [][]byte, B [][]byte) ([][]byte, error) {
 	k := len(A)
+	if k == 0 {
+		return B, nil
+	}
 	shareSize := len(B[0])
 
 	if shareSize == frSymbolSize {
@@ -83,9 +86,18 @@ func SolveGaussian(A [][]byte, B [][]byte) ([][]byte, error) {
 
 func solveGaussianFr(A [][]byte, B [][]byte) ([][]byte, error) {
 	k := len(A)
+	if k == 0 {
+		return B, nil
+	}
+
+	rowLen := len(B[0])
+	numChunks := (rowLen + frSymbolSize - 1) / frSymbolSize
+	if numChunks == 0 {
+		numChunks = 1
+	}
 
 	a := make([][]fr.Element, k)
-	b := make([]fr.Element, k)
+	b := make([][]fr.Element, k)
 
 	for i := 0; i < k; i++ {
 		a[i] = make([]fr.Element, k)
@@ -97,7 +109,18 @@ func solveGaussianFr(A [][]byte, B [][]byte) ([][]byte, error) {
 				a[i][j].SetUint64(uint64(A[i][j]))
 			}
 		}
-		b[i].SetBytes(B[i])
+
+		b[i] = make([]fr.Element, numChunks)
+		for m := 0; m < numChunks; m++ {
+			offset := m * frSymbolSize
+			end := offset + frSymbolSize
+			if end > rowLen {
+				end = rowLen
+			}
+			if offset < rowLen {
+				b[i][m].SetBytes(B[i][offset:end])
+			}
+		}
 	}
 
 	for i := 0; i < k; i++ {
@@ -121,7 +144,9 @@ func solveGaussianFr(A [][]byte, B [][]byte) ([][]byte, error) {
 		for j := i; j < k; j++ {
 			a[i][j].Mul(&a[i][j], &inv)
 		}
-		b[i].Mul(&b[i], &inv)
+		for m := 0; m < numChunks; m++ {
+			b[i][m].Mul(&b[i][m], &inv)
+		}
 
 		for j := 0; j < k; j++ {
 			if i == j || a[j][i].IsZero() {
@@ -135,16 +160,31 @@ func solveGaussianFr(A [][]byte, B [][]byte) ([][]byte, error) {
 				a[j][l].Sub(&a[j][l], &term)
 			}
 
-			var bTerm fr.Element
-			bTerm.Mul(&b[i], &factor)
-			b[j].Sub(&b[j], &bTerm)
+			for m := 0; m < numChunks; m++ {
+				var bTerm fr.Element
+				bTerm.Mul(&b[i][m], &factor)
+				b[j][m].Sub(&b[j][m], &bTerm)
+			}
 		}
 	}
 
 	for i := 0; i < k; i++ {
-		out := b[i].Bytes()
-		copy(B[i], out[:])
+		for m := 0; m < numChunks; m++ {
+			offset := m * frSymbolSize
+			end := offset + frSymbolSize
+			if end > rowLen {
+				end = rowLen
+			}
+			out := b[i][m].Bytes()
+			copy(B[i][offset:end], out[frSymbolSize-(end-offset):])
+		}
 	}
 
 	return B, nil
+}
+
+// SolveGaussianFr solves the linear system A * X = B over BLS12-381 Fr scalar field.
+// It natively supports multi-scalar chunking where each row in B has M * 32 bytes.
+func SolveGaussianFr(A [][]byte, B [][]byte) ([][]byte, error) {
+	return solveGaussianFr(A, B)
 }

@@ -357,7 +357,7 @@ func ComputeOpenProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare,
 		start := piece * pieceSize
 		end := start + pieceSize
 		for i := 0; i < n; i++ {
-			scalars[i].SetBytes(column[i][start:end])
+			scalars[i] = rlnc.FoldMultiScalar(column[i][start:end])
 		}
 
 		proof, err := bls12381kzg.Open(scalars, point, gnarkKZG.srs.Pk)
