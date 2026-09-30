@@ -5,16 +5,22 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"math/bits"
+	"sync"
 
 	"github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
 	"github.com/consensys/gnark-crypto/ecc"
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr/fft"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/kzg"
 )
 
 type GnarkKZG struct {
-	srs kzg.SRS
+	srs      kzg.SRS
+	domainMu sync.RWMutex
+	domain   *fft.Domain
+	fk20     *FK20Engine
 }
 
 var _ KZGProvider = (*GnarkKZG)(nil)
@@ -22,6 +28,57 @@ var _ KZGProvider = (*GnarkKZG)(nil)
 func NewGnarkKZG(srs kzg.SRS) *GnarkKZG {
 	return &GnarkKZG{srs: srs}
 }
+
+// InitFK20 initializes the FK20 engine and sets the evaluation domain to roots of unity for size n.
+func (g *GnarkKZG) InitFK20(size int) error {
+	engine, err := NewFK20Engine(g, size)
+	if err != nil {
+		return err
+	}
+	g.domainMu.Lock()
+	defer g.domainMu.Unlock()
+	g.fk20 = engine
+	g.domain = engine.Domain()
+	return nil
+}
+
+// SetDomainSize sets the evaluation domain to roots of unity of size n (must be power of 2).
+func (g *GnarkKZG) SetDomainSize(size int) error {
+	if size <= 0 || bits.OnesCount64(uint64(size)) != 1 {
+		return fmt.Errorf("domain size must be a power of 2, got %d", size)
+	}
+	g.domainMu.Lock()
+	defer g.domainMu.Unlock()
+	g.domain = fft.NewDomain(uint64(size))
+	return nil
+}
+
+// FK20 returns the initialized FK20Engine, or nil if not initialized.
+func (g *GnarkKZG) FK20() *FK20Engine {
+	g.domainMu.RLock()
+	defer g.domainMu.RUnlock()
+	return g.fk20
+}
+
+// GnarkGetEvaluationPoint returns omega^row if domain is set, or row as an integer in Fr otherwise.
+func (g *GnarkKZG) GnarkGetEvaluationPoint(row int) fr.Element {
+	g.domainMu.RLock()
+	d := g.domain
+	g.domainMu.RUnlock()
+
+	if d != nil {
+		card := int(d.Cardinality)
+		idx := ((row % card) + card) % card
+		var point fr.Element
+		point.Exp(d.Generator, big.NewInt(int64(idx)))
+		return point
+	}
+
+	var z fr.Element
+	z.SetInterface(int64(row))
+	return z
+}
+
 
 // Commit tạo cam kết KZG cho một cột mảnh (piece-column)
 func (g *GnarkKZG) GnarkCommit(data [][]byte) (PieceCommitment, error) {
@@ -252,8 +309,7 @@ func (g *GnarkKZG) GnarkVerify(commit []byte, row int, data []byte, proof Openin
 	val := rlnc.FoldMultiScalar(data)
 
 	// 2. Điểm đánh giá (z) tương ứng với chỉ số hàng trong ma trận [cite: 188]
-	var z fr.Element
-	z.SetInterface(int64(row))
+	z := g.GnarkGetEvaluationPoint(row)
 
 	// 3. Thực hiện kiểm tra bắt cặp (Pairing check) chuẩn KZG [cite: 140, 213]
 	var digest kzg.Digest
@@ -303,7 +359,7 @@ func (g *GnarkKZG) GnarkBatchVerify(items []BatchVerifyItem) bool {
 			return false
 		}
 
-		points[i].SetInterface(int64(item.Row))
+		points[i] = g.GnarkGetEvaluationPoint(item.Row)
 	}
 
 	err := kzg.BatchVerifyMultiPoints(digests, proofs, points, g.srs.Vk)

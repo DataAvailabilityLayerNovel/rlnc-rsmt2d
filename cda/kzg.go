@@ -6,6 +6,7 @@ import (
 
 	rsmt2d "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d"
 	rlnc "github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 )
 
 // PieceCommitment đại diện cho cam kết KZG của một cột mảnh (Piece-column)
@@ -36,6 +37,8 @@ type KZGProvider interface {
 	Verify(commit []byte, row int, data []byte, proof OpeningProof) bool
 	// BatchVerify xác thực đồng thời nhiều mảnh bằng Random Linear Combination (Batch KZG Verification)
 	BatchVerify(items []BatchVerifyItem) bool
+	// GetEvaluationPoint trả về điểm đánh giá z tương ứng với chỉ số hàng row (roots of unity nếu domain được khởi tạo)
+	GetEvaluationPoint(row int) fr.Element
 }
 
 type CDACommitmentManager struct {
@@ -135,4 +138,8 @@ func (g *GnarkKZG) Verify(commit []byte, row int, data []byte, proof OpeningProo
 
 func (g *GnarkKZG) BatchVerify(items []BatchVerifyItem) bool {
 	return g.GnarkBatchVerify(items)
+}
+
+func (g *GnarkKZG) GetEvaluationPoint(row int) fr.Element {
+	return g.GnarkGetEvaluationPoint(row)
 }

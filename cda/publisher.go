@@ -349,8 +349,7 @@ func ComputeOpenProofCell(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare,
 	pieceSize := cellSize / k
 	proofs := make([][]byte, k)
 
-	var point fr.Element
-	point.SetInterface(int64(row))
+	point := gnarkKZG.GetEvaluationPoint(row)
 
 	for piece := 0; piece < k; piece++ {
 		scalars := make([]fr.Element, n)

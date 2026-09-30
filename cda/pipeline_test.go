@@ -77,6 +77,13 @@ func (m *mockKZG) BatchVerify(items []BatchVerifyItem) bool {
 	return true
 }
 
+func (m *mockKZG) GetEvaluationPoint(row int) fr.Element {
+	var z fr.Element
+	z.SetInterface(int64(row))
+	return z
+}
+
+
 // ============================================================
 // Helpers
 // ============================================================
