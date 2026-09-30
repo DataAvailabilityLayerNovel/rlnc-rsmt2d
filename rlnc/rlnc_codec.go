@@ -54,8 +54,8 @@ func (c *RLNCCodec) GenerateCoeffs(k int) []byte {
 			continue
 		}
 		val := binary.BigEndian.Uint16(b)
-		if val == 0 {
-			val = 1
+		if val == 0 || (val&0xFF) == 0 {
+			val++
 		}
 		binary.BigEndian.PutUint16(coeffs[i*2:], val)
 	}
@@ -362,8 +362,8 @@ func (c *RLNCCodec) RecodeWithBeta(pieces []PieceData) (PieceData, []byte, error
 			beta[i] = 1
 		} else {
 			val := binary.BigEndian.Uint16(b)
-			if val == 0 {
-				val = 1
+			if val == 0 || (val&0xFF) == 0 {
+				val++
 			}
 			beta[i] = val
 		}

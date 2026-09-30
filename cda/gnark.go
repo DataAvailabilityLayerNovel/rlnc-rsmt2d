@@ -7,6 +7,7 @@ import (
 	"math/big"
 
 	"github.com/DataAvailabilityLayerNovel/rlnc-rsmt2d/rlnc"
+	"github.com/consensys/gnark-crypto/ecc"
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/kzg"
@@ -42,40 +43,88 @@ func (g *GnarkKZG) GnarkCommit(data [][]byte) (PieceCommitment, error) {
 }
 
 // Combine thực hiện tổ hợp đồng cấu các cam kết dựa trên hệ số RLNC
-// com_coded = sum(g_i * com_i)
+// com_coded = sum(g_i * com_i).
+// Sử dụng Jacobian Accumulator tối ưu:
+// - Tích lũy trên tọa độ xạ ảnh Jacobian (G1Jac) qua phép cộng mixed AddMixed,
+//   loại bỏ hoàn toàn phép nghịch đảo modulo trong vòng lặp (chỉ đúng 1 phép nghịch đảo ở cuối cùng).
+// - Short-circuiting: bỏ qua c = 0, xử lý c = 1 trực tiếp không cần nhân vô hướng.
+// - Tái sử dụng big.Int (0 heap allocation).
+// - Với n > 16 và hệ số đầy đủ 256-bit: sử dụng Pippenger MSM.
 func (g *GnarkKZG) GnarkCombine(commits []PieceCommitment, coeffs []byte) (ColumnCommitment, error) {
-	if len(commits) == 0 {
+	n := len(commits)
+	if n == 0 {
 		return nil, fmt.Errorf("commits cannot be empty")
 	}
-	if len(coeffs) != len(commits) && len(coeffs) != 2*len(commits) && len(coeffs) != 32*len(commits) {
-		return nil, fmt.Errorf("coeffs length (%d) does not match commits length (%d), 2x (%d) or 32x commits length", len(coeffs), len(commits), 2*len(commits))
+	if len(coeffs) != n && len(coeffs) != 2*n && len(coeffs) != 32*n {
+		return nil, fmt.Errorf("coeffs length (%d) does not match commits length (%d), 2x (%d) or 32x commits length", len(coeffs), n, 2*n)
+	}
+
+	points := make([]bls12381.G1Affine, n)
+	for i, commBytes := range commits {
+		if err := points[i].Unmarshal(commBytes); err != nil {
+			return nil, err
+		}
 	}
 
 	var combined bls12381.G1Affine
-	var temp bls12381.G1Affine
 
-	for i, commBytes := range commits {
-		if err := temp.Unmarshal(commBytes); err != nil {
+	if len(coeffs) == 32*n && n > 16 {
+		// Nhánh full 256-bit với n lớn (>16): Pippenger MSM
+		scalars := make([]fr.Element, n)
+		for i := 0; i < n; i++ {
+			scalars[i].SetBytes(coeffs[i*32 : (i+1)*32])
+		}
+		if _, err := combined.MultiExp(points, scalars, ecc.MultiExpConfig{}); err != nil {
 			return nil, err
 		}
-
-		// Chuyển hệ số g_i thành Scalar để nhân vô hướng
+	} else if len(coeffs) == 32*n {
+		// Nhánh full 256-bit với n nhỏ (<= 16): Jacobian Accumulator nhanh hơn Pippenger
+		var accJac bls12381.G1Jac
 		var scalar fr.Element
-		if len(coeffs) == 32*len(commits) {
+		bInt := new(big.Int)
+		for i := 0; i < n; i++ {
 			scalar.SetBytes(coeffs[i*32 : (i+1)*32])
-		} else if len(coeffs) == 2*len(commits) {
-			cVal := binary.BigEndian.Uint16(coeffs[i*2 : (i+1)*2])
-			scalar.SetUint64(uint64(cVal))
-		} else {
-			scalar.SetInterface(int64(coeffs[i]))
+			if scalar.IsZero() {
+				continue
+			}
+			if scalar.IsOne() {
+				accJac.AddMixed(&points[i])
+				continue
+			}
+
+			var ptJac, scaledJac bls12381.G1Jac
+			ptJac.FromAffine(&points[i])
+			scaledJac.ScalarMultiplication(&ptJac, scalar.BigInt(bInt))
+			accJac.AddAssign(&scaledJac)
 		}
+		combined.FromJacobian(&accJac)
+	} else {
+		// Nhánh 8-bit / 16-bit phổ biến trong CDA RLNC: Tối ưu tối đa với AddMixed & Short-circuit
+		var accJac bls12381.G1Jac
+		bInt := new(big.Int)
+		for i := 0; i < n; i++ {
+			var cVal uint64
+			if len(coeffs) == 2*n {
+				cVal = uint64(binary.BigEndian.Uint16(coeffs[i*2 : (i+1)*2]))
+			} else {
+				cVal = uint64(coeffs[i])
+			}
 
-		// Tính g_i * com_i [cite: 184, 191]
-		var scaled bls12381.G1Affine
-		scaled.ScalarMultiplication(&temp, scalar.BigInt(new(big.Int)))
+			if cVal == 0 {
+				continue
+			}
+			if cVal == 1 {
+				accJac.AddMixed(&points[i])
+				continue
+			}
 
-		// Cộng dồn vào điểm kết quả
-		combined.Add(&combined, &scaled)
+			bInt.SetUint64(cVal)
+			var ptJac, scaledJac bls12381.G1Jac
+			ptJac.FromAffine(&points[i])
+			scaledJac.ScalarMultiplication(&ptJac, bInt)
+			accJac.AddAssign(&scaledJac)
+		}
+		combined.FromJacobian(&accJac)
 	}
 
 	return combined.Marshal(), nil
@@ -83,40 +132,98 @@ func (g *GnarkKZG) GnarkCombine(commits []PieceCommitment, coeffs []byte) (Colum
 
 // GnarkCombineProofs tổ hợp tuyến tính nhiều opening proof tại cùng một điểm mở.
 func (g *GnarkKZG) GnarkCombineProofs(proofs []OpeningProof, coeffs []byte) (OpeningProof, error) {
-	if len(proofs) == 0 {
+	n := len(proofs)
+	if n == 0 {
 		return nil, fmt.Errorf("proofs cannot be empty")
 	}
-	if len(coeffs) != len(proofs) && len(coeffs) != 2*len(proofs) && len(coeffs) != 32*len(proofs) {
-		return nil, fmt.Errorf("coeffs length (%d) does not match proofs length (%d), 2x (%d) or 32x proofs length", len(coeffs), len(proofs), 2*len(proofs))
+	if len(coeffs) != n && len(coeffs) != 2*n && len(coeffs) != 32*n {
+		return nil, fmt.Errorf("coeffs length (%d) does not match proofs length (%d), 2x (%d) or 32x proofs length", len(coeffs), n, 2*n)
 	}
 
-	var combinedH bls12381.G1Affine
-	var tempProof kzg.OpeningProof
-	var combinedValue fr.Element
-
+	points := make([]bls12381.G1Affine, n)
+	claimedValues := make([]fr.Element, n)
 	for i, proofBytes := range proofs {
-		tempProof = kzg.OpeningProof{}
+		var tempProof kzg.OpeningProof
 		if _, err := tempProof.ReadFrom(bytes.NewReader(proofBytes)); err != nil {
 			return nil, err
 		}
+		points[i] = tempProof.H
+		claimedValues[i] = tempProof.ClaimedValue
+	}
 
-		var scalar fr.Element
-		if len(coeffs) == 32*len(proofs) {
-			scalar.SetBytes(coeffs[i*32 : (i+1)*32])
-		} else if len(coeffs) == 2*len(proofs) {
-			cVal := binary.BigEndian.Uint16(coeffs[i*2 : (i+1)*2])
-			scalar.SetUint64(uint64(cVal))
-		} else {
-			scalar.SetInterface(int64(coeffs[i]))
+	var combinedH bls12381.G1Affine
+	var combinedValue fr.Element
+
+	if len(coeffs) == 32*n && n > 16 {
+		scalars := make([]fr.Element, n)
+		for i := 0; i < n; i++ {
+			scalars[i].SetBytes(coeffs[i*32 : (i+1)*32])
+			var scaledValue fr.Element
+			scaledValue.Mul(&claimedValues[i], &scalars[i])
+			combinedValue.Add(&combinedValue, &scaledValue)
 		}
+		if _, err := combinedH.MultiExp(points, scalars, ecc.MultiExpConfig{}); err != nil {
+			return nil, err
+		}
+	} else if len(coeffs) == 32*n {
+		var accJac bls12381.G1Jac
+		var scalar fr.Element
+		bInt := new(big.Int)
+		for i := 0; i < n; i++ {
+			scalar.SetBytes(coeffs[i*32 : (i+1)*32])
+			if scalar.IsZero() {
+				continue
+			}
 
-		var scaledH bls12381.G1Affine
-		scaledH.ScalarMultiplication(&tempProof.H, scalar.BigInt(new(big.Int)))
-		combinedH.Add(&combinedH, &scaledH)
+			var scaledValue fr.Element
+			scaledValue.Mul(&claimedValues[i], &scalar)
+			combinedValue.Add(&combinedValue, &scaledValue)
 
-		var scaledValue fr.Element
-		scaledValue.Mul(&tempProof.ClaimedValue, &scalar)
-		combinedValue.Add(&combinedValue, &scaledValue)
+			if scalar.IsOne() {
+				accJac.AddMixed(&points[i])
+				continue
+			}
+
+			var ptJac, scaledJac bls12381.G1Jac
+			ptJac.FromAffine(&points[i])
+			scaledJac.ScalarMultiplication(&ptJac, scalar.BigInt(bInt))
+			accJac.AddAssign(&scaledJac)
+		}
+		combinedH.FromJacobian(&accJac)
+	} else {
+		var accJac bls12381.G1Jac
+		bInt := new(big.Int)
+		var scalar fr.Element
+		for i := 0; i < n; i++ {
+			var cVal uint64
+			if len(coeffs) == 2*n {
+				cVal = uint64(binary.BigEndian.Uint16(coeffs[i*2 : (i+1)*2]))
+				scalar.SetUint64(cVal)
+			} else {
+				cVal = uint64(coeffs[i])
+				scalar.SetInterface(int64(coeffs[i]))
+			}
+
+			if cVal == 0 {
+				continue
+			}
+
+			var scaledValue fr.Element
+			scaledValue.Mul(&claimedValues[i], &scalar)
+			combinedValue.Add(&combinedValue, &scaledValue)
+
+			if cVal == 1 {
+				accJac.AddMixed(&points[i])
+				continue
+			}
+
+			bInt.SetUint64(cVal)
+			var ptJac, scaledJac bls12381.G1Jac
+			ptJac.FromAffine(&points[i])
+			scaledJac.ScalarMultiplication(&ptJac, bInt)
+			accJac.AddAssign(&scaledJac)
+		}
+		combinedH.FromJacobian(&accJac)
 	}
 
 	combinedProof := kzg.OpeningProof{
