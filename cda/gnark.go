@@ -19,6 +19,7 @@ import (
 type GnarkKZG struct {
 	srs      kzg.SRS
 	domainMu sync.RWMutex
+	domains  map[int]*fft.Domain
 	domain   *fft.Domain
 	fk20     *FK20Engine
 }
@@ -26,7 +27,37 @@ type GnarkKZG struct {
 var _ KZGProvider = (*GnarkKZG)(nil)
 
 func NewGnarkKZG(srs kzg.SRS) *GnarkKZG {
-	return &GnarkKZG{srs: srs}
+	return &GnarkKZG{
+		srs:     srs,
+		domains: make(map[int]*fft.Domain),
+	}
+}
+
+// GetDomain retrieves or lazily instantiates the evaluation domain of size n (must be power of 2).
+func (g *GnarkKZG) GetDomain(size int) *fft.Domain {
+	if size <= 0 || bits.OnesCount64(uint64(size)) != 1 {
+		return nil
+	}
+	g.domainMu.RLock()
+	if g.domains != nil {
+		if d, ok := g.domains[size]; ok && d != nil {
+			g.domainMu.RUnlock()
+			return d
+		}
+	}
+	g.domainMu.RUnlock()
+
+	g.domainMu.Lock()
+	defer g.domainMu.Unlock()
+	if g.domains == nil {
+		g.domains = make(map[int]*fft.Domain)
+	}
+	if d, ok := g.domains[size]; ok && d != nil {
+		return d
+	}
+	d := fft.NewDomain(uint64(size))
+	g.domains[size] = d
+	return d
 }
 
 // InitFK20 initializes the FK20 engine and sets the evaluation domain to roots of unity for size n.
@@ -37,19 +68,24 @@ func (g *GnarkKZG) InitFK20(size int) error {
 	}
 	g.domainMu.Lock()
 	defer g.domainMu.Unlock()
+	if g.domains == nil {
+		g.domains = make(map[int]*fft.Domain)
+	}
 	g.fk20 = engine
 	g.domain = engine.Domain()
+	g.domains[size] = engine.Domain()
 	return nil
 }
 
 // SetDomainSize sets the evaluation domain to roots of unity of size n (must be power of 2).
 func (g *GnarkKZG) SetDomainSize(size int) error {
-	if size <= 0 || bits.OnesCount64(uint64(size)) != 1 {
+	d := g.GetDomain(size)
+	if d == nil {
 		return fmt.Errorf("domain size must be a power of 2, got %d", size)
 	}
 	g.domainMu.Lock()
-	defer g.domainMu.Unlock()
-	g.domain = fft.NewDomain(uint64(size))
+	g.domain = d
+	g.domainMu.Unlock()
 	return nil
 }
 
@@ -77,6 +113,21 @@ func (g *GnarkKZG) GnarkGetEvaluationPoint(row int) fr.Element {
 	var z fr.Element
 	z.SetInterface(int64(row))
 	return z
+}
+
+// GnarkGetEvaluationPointForDomain returns omega^row for the specified domain size, or falls back to GnarkGetEvaluationPoint.
+func (g *GnarkKZG) GnarkGetEvaluationPointForDomain(row int, domainSize int) fr.Element {
+	if domainSize > 0 {
+		d := g.GetDomain(domainSize)
+		if d != nil {
+			card := int(d.Cardinality)
+			idx := ((row % card) + card) % card
+			var point fr.Element
+			point.Exp(d.Generator, big.NewInt(int64(idx)))
+			return point
+		}
+	}
+	return g.GnarkGetEvaluationPoint(row)
 }
 
 
@@ -298,6 +349,11 @@ func (g *GnarkKZG) GnarkCombineProofs(proofs []OpeningProof, coeffs []byte) (Ope
 
 // Verify xác thực một mảnh RLNC nhận được qua hàm định đề Pred(h, i, x)
 func (g *GnarkKZG) GnarkVerify(commit []byte, row int, data []byte, proof OpeningProof) bool {
+	return g.GnarkVerifyForDomain(commit, row, data, proof, 0)
+}
+
+// GnarkVerifyForDomain xác thực một mảnh RLNC với domain size cụ thể (size = N = 2*K)
+func (g *GnarkKZG) GnarkVerifyForDomain(commit []byte, row int, data []byte, proof OpeningProof, domainSize int) bool {
 	if row < 0 {
 		return false
 	}
@@ -308,10 +364,10 @@ func (g *GnarkKZG) GnarkVerify(commit []byte, row int, data []byte, proof Openin
 	// 1. Chuyển giá trị mảnh dữ liệu thành Scalar (y) qua FoldMultiScalar
 	val := rlnc.FoldMultiScalar(data)
 
-	// 2. Điểm đánh giá (z) tương ứng với chỉ số hàng trong ma trận [cite: 188]
-	z := g.GnarkGetEvaluationPoint(row)
+	// 2. Điểm đánh giá (z) tương ứng với chỉ số hàng trong ma trận
+	z := g.GnarkGetEvaluationPointForDomain(row, domainSize)
 
-	// 3. Thực hiện kiểm tra bắt cặp (Pairing check) chuẩn KZG [cite: 140, 213]
+	// 3. Thực hiện kiểm tra bắt cặp (Pairing check) chuẩn KZG
 	var digest kzg.Digest
 	if err := digest.Unmarshal(commit); err != nil {
 		return false
@@ -330,11 +386,16 @@ func (g *GnarkKZG) GnarkVerify(commit []byte, row int, data []byte, proof Openin
 // GnarkBatchVerify xác thực đồng thời nhiều mảnh bằng Random Linear Combination (Batch KZG Verification).
 // Thuật toán giảm từ 2*N pairings xuống đúng 2 pairings bằng cách tổ hợp ngẫu nhiên.
 func (g *GnarkKZG) GnarkBatchVerify(items []BatchVerifyItem) bool {
+	return g.GnarkBatchVerifyForDomain(items, 0)
+}
+
+// GnarkBatchVerifyForDomain xác thực đồng thời nhiều mảnh với domain size cụ thể (size = N = 2*K)
+func (g *GnarkKZG) GnarkBatchVerifyForDomain(items []BatchVerifyItem, domainSize int) bool {
 	if len(items) == 0 {
 		return true
 	}
 	if len(items) == 1 {
-		return g.GnarkVerify(items[0].Commitment, items[0].Row, items[0].Data, items[0].Proof)
+		return g.GnarkVerifyForDomain(items[0].Commitment, items[0].Row, items[0].Data, items[0].Proof, domainSize)
 	}
 
 	digests := make([]kzg.Digest, len(items))
@@ -359,7 +420,7 @@ func (g *GnarkKZG) GnarkBatchVerify(items []BatchVerifyItem) bool {
 			return false
 		}
 
-		points[i] = g.GnarkGetEvaluationPoint(item.Row)
+		points[i] = g.GnarkGetEvaluationPointForDomain(item.Row, domainSize)
 	}
 
 	err := kzg.BatchVerifyMultiPoints(digests, proofs, points, g.srs.Vk)

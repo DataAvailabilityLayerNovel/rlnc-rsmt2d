@@ -113,3 +113,58 @@ func BenchmarkFK20_vs_NaiveOpen_Size128(b *testing.B) {
 		}
 	})
 }
+
+func TestMultiDomainVerification(t *testing.T) {
+	srs, err := bls12381kzg.NewSRS(256, big.NewInt(-1))
+	require.NoError(t, err)
+
+	gnarkKZG := NewGnarkKZG(*srs)
+	// Simulate Store Node startup: SetDomainSize(128)
+	err = gnarkKZG.SetDomainSize(128)
+	require.NoError(t, err)
+
+	// Block with N=16 arrives
+	nSmall := 16
+	fk20Small, err := NewFK20Engine(gnarkKZG, nSmall)
+	require.NoError(t, err)
+
+	poly := make([]fr.Element, nSmall)
+	for i := 0; i < nSmall; i++ {
+		poly[i].SetRandom()
+	}
+
+	commit, err := bls12381kzg.Commit(poly, srs.Pk)
+	require.NoError(t, err)
+	commitBytes := commit.Marshal()
+
+	proofs, err := fk20Small.ComputeAllProofs(poly)
+	require.NoError(t, err)
+
+	items := make([]BatchVerifyItem, nSmall)
+	for i := 0; i < nSmall; i++ {
+		var op bls12381kzg.OpeningProof
+		_, err := op.ReadFrom(bytes.NewReader(proofs[i]))
+		require.NoError(t, err)
+
+		valBytes := op.ClaimedValue.Bytes()
+		cellData := make([]byte, 64)
+		copy(cellData[:32], valBytes[:])
+
+		items[i] = BatchVerifyItem{
+			Commitment: commitBytes,
+			Row:        i,
+			Data:       cellData,
+			Proof:      proofs[i],
+		}
+
+		// Individual verify with domain size 16
+		ok := gnarkKZG.VerifyForDomain(commitBytes, i, cellData, proofs[i], nSmall)
+		require.True(t, ok, "VerifyForDomain failed for row %d with domain %d", i, nSmall)
+	}
+
+	// Batch verify with domain size 16 (even though default domain is 128!)
+	okBatch := gnarkKZG.BatchVerifyForDomain(items, nSmall)
+	require.True(t, okBatch, "BatchVerifyForDomain failed for domain size %d", nSmall)
+}
+
+

@@ -77,7 +77,21 @@ func (m *mockKZG) BatchVerify(items []BatchVerifyItem) bool {
 	return true
 }
 
+func (m *mockKZG) VerifyForDomain(commit []byte, row int, data []byte, proof OpeningProof, domainSize int) bool {
+	return true
+}
+
+func (m *mockKZG) BatchVerifyForDomain(items []BatchVerifyItem, domainSize int) bool {
+	return true
+}
+
 func (m *mockKZG) GetEvaluationPoint(row int) fr.Element {
+	var z fr.Element
+	z.SetInterface(int64(row))
+	return z
+}
+
+func (m *mockKZG) GetEvaluationPointForDomain(row int, domainSize int) fr.Element {
 	var z fr.Element
 	z.SetInterface(int64(row))
 	return z

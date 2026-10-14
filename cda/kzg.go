@@ -35,10 +35,16 @@ type KZGProvider interface {
 	CombineProofs(proofs []OpeningProof, coeffs []byte) (OpeningProof, error)
 	// Verify xác thực một mảnh với cam kết (mảnh hoặc cột tổ hợp) tương ứng và proof tương ứng
 	Verify(commit []byte, row int, data []byte, proof OpeningProof) bool
+	// VerifyForDomain xác thực một mảnh với domain size cụ thể (size = N = 2*K)
+	VerifyForDomain(commit []byte, row int, data []byte, proof OpeningProof, domainSize int) bool
 	// BatchVerify xác thực đồng thời nhiều mảnh bằng Random Linear Combination (Batch KZG Verification)
 	BatchVerify(items []BatchVerifyItem) bool
+	// BatchVerifyForDomain xác thực đồng thời nhiều mảnh với domain size cụ thể (size = N = 2*K)
+	BatchVerifyForDomain(items []BatchVerifyItem, domainSize int) bool
 	// GetEvaluationPoint trả về điểm đánh giá z tương ứng với chỉ số hàng row (roots of unity nếu domain được khởi tạo)
 	GetEvaluationPoint(row int) fr.Element
+	// GetEvaluationPointForDomain trả về điểm đánh giá z tương ứng với hàng row trên domain size
+	GetEvaluationPointForDomain(row int, domainSize int) fr.Element
 }
 
 type CDACommitmentManager struct {
@@ -136,10 +142,23 @@ func (g *GnarkKZG) Verify(commit []byte, row int, data []byte, proof OpeningProo
 	return g.GnarkVerify(commit, row, data, proof)
 }
 
+func (g *GnarkKZG) VerifyForDomain(commit []byte, row int, data []byte, proof OpeningProof, domainSize int) bool {
+	return g.GnarkVerifyForDomain(commit, row, data, proof, domainSize)
+}
+
 func (g *GnarkKZG) BatchVerify(items []BatchVerifyItem) bool {
 	return g.GnarkBatchVerify(items)
+}
+
+func (g *GnarkKZG) BatchVerifyForDomain(items []BatchVerifyItem, domainSize int) bool {
+	return g.GnarkBatchVerifyForDomain(items, domainSize)
 }
 
 func (g *GnarkKZG) GetEvaluationPoint(row int) fr.Element {
 	return g.GnarkGetEvaluationPoint(row)
 }
+
+func (g *GnarkKZG) GetEvaluationPointForDomain(row int, domainSize int) fr.Element {
+	return g.GnarkGetEvaluationPointForDomain(row, domainSize)
+}
+

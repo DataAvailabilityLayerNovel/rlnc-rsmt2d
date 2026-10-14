@@ -3,6 +3,7 @@ package cda
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"math/big"
 	"sync"
 
@@ -443,4 +444,53 @@ func ComputeOpenProofCells(codec *rlnc.RLNCCodec, eds *rsmt2d.ExtendedDataSquare
 	}
 
 	return openProofCells, nil
+}
+
+// DefaultMinODSK is the default minimum ODS dimension K (ensures 2*K >= 8 network columns).
+const DefaultMinODSK = 8
+
+// DefaultMaxODSK is the default maximum ODS dimension K.
+const DefaultMaxODSK = 64
+
+// ComputeOptimalODSK calculates the smallest power-of-2 dimension K (within [minK, maxK])
+// needed to accommodate the specified cell count.
+// For empty or minimal blocks (cellCount <= minK*minK), returns minK.
+func ComputeOptimalODSK(cellCount int, minK int, maxK int) int {
+	if minK <= 0 {
+		minK = DefaultMinODSK
+	}
+	if maxK <= 0 {
+		maxK = DefaultMaxODSK
+	}
+	if maxK < minK {
+		maxK = minK
+	}
+	if cellCount <= minK*minK {
+		return minK
+	}
+	k := minK
+	for k < maxK && k*k < cellCount {
+		k *= 2
+	}
+	if k > maxK {
+		k = maxK
+	}
+	return k
+}
+
+// DetermineKFromCellCount derives the dimension K from the total number of cells in an ODS.
+// If cellCount is a perfect square (k*k == cellCount), returns k.
+// Otherwise returns ComputeOptimalODSK(cellCount, minK, maxK).
+func DetermineKFromCellCount(cellCount int, minK int, maxK int) int {
+	if cellCount <= 0 {
+		if minK <= 0 {
+			return DefaultMinODSK
+		}
+		return minK
+	}
+	k := int(math.Round(math.Sqrt(float64(cellCount))))
+	if k*k == cellCount && k >= minK {
+		return k
+	}
+	return ComputeOptimalODSK(cellCount, minK, maxK)
 }
