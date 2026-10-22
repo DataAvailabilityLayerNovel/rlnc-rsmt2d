@@ -17,19 +17,21 @@ import (
 )
 
 type GnarkKZG struct {
-	srs      kzg.SRS
-	domainMu sync.RWMutex
-	domains  map[int]*fft.Domain
-	domain   *fft.Domain
-	fk20     *FK20Engine
+	srs         kzg.SRS
+	domainMu    sync.RWMutex
+	domains     map[int]*fft.Domain
+	fk20Engines map[int]*FK20Engine
+	domain      *fft.Domain
+	fk20        *FK20Engine
 }
 
 var _ KZGProvider = (*GnarkKZG)(nil)
 
 func NewGnarkKZG(srs kzg.SRS) *GnarkKZG {
 	return &GnarkKZG{
-		srs:     srs,
-		domains: make(map[int]*fft.Domain),
+		srs:         srs,
+		domains:     make(map[int]*fft.Domain),
+		fk20Engines: make(map[int]*FK20Engine),
 	}
 }
 
@@ -60,21 +62,54 @@ func (g *GnarkKZG) GetDomain(size int) *fft.Domain {
 	return d
 }
 
-// InitFK20 initializes the FK20 engine and sets the evaluation domain to roots of unity for size n.
-func (g *GnarkKZG) InitFK20(size int) error {
-	engine, err := NewFK20Engine(g, size)
-	if err != nil {
-		return err
+// GetOrInitFK20 retrieves a cached FK20Engine for domain size n or initializes and caches a new one.
+func (g *GnarkKZG) GetOrInitFK20(size int) (*FK20Engine, error) {
+	g.domainMu.RLock()
+	if g.fk20Engines != nil {
+		if eng, ok := g.fk20Engines[size]; ok && eng != nil {
+			curDomain := g.domain
+			curFK20 := g.fk20
+			g.domainMu.RUnlock()
+			if curFK20 != eng || curDomain != eng.Domain() {
+				g.domainMu.Lock()
+				g.fk20 = eng
+				g.domain = eng.Domain()
+				g.domainMu.Unlock()
+			}
+			return eng, nil
+		}
 	}
+	g.domainMu.RUnlock()
+
 	g.domainMu.Lock()
 	defer g.domainMu.Unlock()
+	if g.fk20Engines == nil {
+		g.fk20Engines = make(map[int]*FK20Engine)
+	}
 	if g.domains == nil {
 		g.domains = make(map[int]*fft.Domain)
 	}
+	if eng, ok := g.fk20Engines[size]; ok && eng != nil {
+		g.fk20 = eng
+		g.domain = eng.Domain()
+		return eng, nil
+	}
+
+	engine, err := NewFK20Engine(g, size)
+	if err != nil {
+		return nil, err
+	}
+	g.fk20Engines[size] = engine
+	g.domains[size] = engine.Domain()
 	g.fk20 = engine
 	g.domain = engine.Domain()
-	g.domains[size] = engine.Domain()
-	return nil
+	return engine, nil
+}
+
+// InitFK20 initializes the FK20 engine and sets the evaluation domain to roots of unity for size n.
+func (g *GnarkKZG) InitFK20(size int) error {
+	_, err := g.GetOrInitFK20(size)
+	return err
 }
 
 // SetDomainSize sets the evaluation domain to roots of unity of size n (must be power of 2).
@@ -238,6 +273,25 @@ func (g *GnarkKZG) GnarkCombine(commits []PieceCommitment, coeffs []byte) (Colum
 	return combined.Marshal(), nil
 }
 
+// GnarkUnpackProofs unmarshals compressed OpeningProof slices into G1Affine points and Fr claimed values once.
+func (g *GnarkKZG) GnarkUnpackProofs(proofs []OpeningProof) ([]bls12381.G1Affine, []fr.Element, error) {
+	n := len(proofs)
+	if n == 0 {
+		return nil, nil, fmt.Errorf("proofs cannot be empty")
+	}
+	points := make([]bls12381.G1Affine, n)
+	claimedValues := make([]fr.Element, n)
+	for i, proofBytes := range proofs {
+		var tempProof kzg.OpeningProof
+		if _, err := tempProof.ReadFrom(bytes.NewReader(proofBytes)); err != nil {
+			return nil, nil, err
+		}
+		points[i] = tempProof.H
+		claimedValues[i] = tempProof.ClaimedValue
+	}
+	return points, claimedValues, nil
+}
+
 // GnarkCombineProofs tổ hợp tuyến tính nhiều opening proof tại cùng một điểm mở.
 func (g *GnarkKZG) GnarkCombineProofs(proofs []OpeningProof, coeffs []byte) (OpeningProof, error) {
 	n := len(proofs)
@@ -247,16 +301,21 @@ func (g *GnarkKZG) GnarkCombineProofs(proofs []OpeningProof, coeffs []byte) (Ope
 	if len(coeffs) != n && len(coeffs) != 2*n && len(coeffs) != 32*n {
 		return nil, fmt.Errorf("coeffs length (%d) does not match proofs length (%d), 2x (%d) or 32x proofs length", len(coeffs), n, 2*n)
 	}
+	points, claimedValues, err := g.GnarkUnpackProofs(proofs)
+	if err != nil {
+		return nil, err
+	}
+	return g.GnarkCombineUnpackedProofs(points, claimedValues, coeffs)
+}
 
-	points := make([]bls12381.G1Affine, n)
-	claimedValues := make([]fr.Element, n)
-	for i, proofBytes := range proofs {
-		var tempProof kzg.OpeningProof
-		if _, err := tempProof.ReadFrom(bytes.NewReader(proofBytes)); err != nil {
-			return nil, err
-		}
-		points[i] = tempProof.H
-		claimedValues[i] = tempProof.ClaimedValue
+// GnarkCombineUnpackedProofs linearly combines pre-unpacked G1Affine proof points and claimed values without repeated decompression.
+func (g *GnarkKZG) GnarkCombineUnpackedProofs(points []bls12381.G1Affine, claimedValues []fr.Element, coeffs []byte) (OpeningProof, error) {
+	n := len(points)
+	if n == 0 || len(claimedValues) != n {
+		return nil, fmt.Errorf("invalid unpacked proofs length")
+	}
+	if len(coeffs) != n && len(coeffs) != 2*n && len(coeffs) != 32*n {
+		return nil, fmt.Errorf("coeffs length (%d) does not match proofs length (%d), 2x (%d) or 32x proofs length", len(coeffs), n, 2*n)
 	}
 
 	var combinedH bls12381.G1Affine
