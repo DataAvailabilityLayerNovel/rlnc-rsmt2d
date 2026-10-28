@@ -385,3 +385,136 @@ func TestCDA_MultiScalar512B_BatchVerifyAndRecode(t *testing.T) {
 	okRecoded := kzgProvider.Verify(recodedCommit, rowIdx, recoded.Data.Data, recoded.Proof)
 	require.True(t, okRecoded, "Recoded 128B multi-scalar piece verification must succeed")
 }
+
+func TestRecodePiecesWithVerify_SelfVerificationGuard(t *testing.T) {
+	n := 16
+	kPiece := 4
+	cellSize := 128
+	frSize := cellSize / kPiece
+	rowIdx := 1
+
+	columnData := make([][]byte, n)
+	for r := 0; r < n; r++ {
+		columnData[r] = make([]byte, cellSize)
+		_, _ = rand.Read(columnData[r])
+	}
+
+	srs, err := bls12381kzg.NewSRS(1024, big.NewInt(-1))
+	require.NoError(t, err)
+	kzgProvider := NewGnarkKZG(*srs)
+
+	var pieceCommits [][]byte
+	for j := 0; j < kPiece; j++ {
+		pieceCol := make([][]byte, n)
+		for r := 0; r < n; r++ {
+			pieceCol[r] = columnData[r][j*frSize : (j+1)*frSize]
+		}
+		commit, err := kzgProvider.Commit(pieceCol)
+		require.NoError(t, err)
+		pieceCommits = append(pieceCommits, commit)
+	}
+
+	var point fr.Element
+	point.SetInterface(int64(rowIdx))
+	openingProofs := make([]OpeningProof, kPiece)
+	for j := 0; j < kPiece; j++ {
+		scalars := make([]fr.Element, n)
+		for r := 0; r < n; r++ {
+			scalars[r] = rlnc.FoldMultiScalar(columnData[r][j*frSize : (j+1)*frSize])
+		}
+		proof, err := bls12381kzg.Open(scalars, point, srs.Pk)
+		require.NoError(t, err)
+		var out bytes.Buffer
+		_, err = proof.WriteTo(&out)
+		require.NoError(t, err)
+		openingProofs[j] = out.Bytes()
+	}
+
+	numChunks := frSize / 32
+	fragments := make([][]byte, kPiece)
+	for j := 0; j < kPiece; j++ {
+		fragments[j] = make([]byte, frSize)
+		for m := 0; m < numChunks; m++ {
+			var eval fr.Element
+			for r := 0; r < n; r++ {
+				var val fr.Element
+				val.SetBytes(columnData[r][j*frSize+m*32 : j*frSize+(m+1)*32])
+				var zPower fr.Element
+				zPower.Exp(point, big.NewInt(int64(r)))
+				var term fr.Element
+				term.Mul(&val, &zPower)
+				eval.Add(&eval, &term)
+			}
+			out := eval.Bytes()
+			copy(fragments[j][m*32:(m+1)*32], out[:])
+		}
+	}
+
+	rawPieces := make([]ReceivedPiece, kPiece)
+	for p := 0; p < kPiece; p++ {
+		coeffs := make([]byte, 2*kPiece)
+		for i := 0; i < kPiece; i++ {
+			binary.BigEndian.PutUint16(coeffs[i*2:(i+1)*2], uint16(p*kPiece+i+1))
+		}
+
+		codedData := make([]byte, frSize)
+		for j := 0; j < kPiece; j++ {
+			cVal := binary.BigEndian.Uint16(coeffs[j*2 : (j+1)*2])
+			rlnc.VectorMulAddFr(codedData, fragments[j], cVal)
+		}
+
+		combinedProof, err := kzgProvider.CombineProofs(openingProofs, coeffs)
+		require.NoError(t, err)
+
+		rawPieces[p] = ReceivedPiece{
+			Row: rowIdx,
+			Col: 0,
+			Data: rlnc.PieceData{
+				Data:   codedData,
+				Coeffs: coeffs,
+			},
+			Proof: combinedProof,
+		}
+	}
+
+	rm := NewRecipientManager(kPiece, kzgProvider)
+
+	// 1. Honest pieces: RecodePiecesWithVerify must succeed
+	recoded, err := rm.RecodePiecesWithVerify(rawPieces[:2], pieceCommits, 5)
+	require.NoError(t, err, "RecodePiecesWithVerify should succeed for honest pieces")
+	require.NotNil(t, recoded)
+
+	// Verify KZG validity of the recoded output
+	pcSlice := make([]PieceCommitment, len(pieceCommits))
+	for i, c := range pieceCommits {
+		pcSlice[i] = PieceCommitment(c)
+	}
+	combCommit, err := kzgProvider.Combine(pcSlice, recoded.Data.Coeffs)
+	require.NoError(t, err)
+	require.True(t, kzgProvider.Verify(combCommit, rowIdx, recoded.Data.Data, recoded.Proof))
+
+	// 2. Byzantine piece injection: corrupt piece 0's data
+	corruptPieces := make([]ReceivedPiece, len(rawPieces))
+	copy(corruptPieces, rawPieces)
+	badData := make([]byte, len(corruptPieces[0].Data.Data))
+	copy(badData, corruptPieces[0].Data.Data)
+	badData[0] ^= 0xff // flip bits
+	corruptPieces[0].Data.Data = badData
+
+	// Self-verification guard must catch the corrupted piece and reject recoding!
+	recodedBad, errBad := rm.RecodePiecesWithVerify(corruptPieces[:2], pieceCommits, 5)
+	require.Error(t, errBad, "RecodePiecesWithVerify must reject corrupted piece input")
+	require.Nil(t, recodedBad, "Recoded piece must be nil upon verification failure")
+
+	// 3. Forged piece commitment injection: wrong pieceCommits
+	forgedCommits := make([][]byte, len(pieceCommits))
+	copy(forgedCommits, pieceCommits)
+	forgedCommits[0] = make([]byte, len(pieceCommits[0]))
+	copy(forgedCommits[0], pieceCommits[0])
+	forgedCommits[0][2] ^= 0xbb
+
+	recodedForged, errForged := rm.RecodePiecesWithVerify(rawPieces[:2], forgedCommits, 5)
+	require.Error(t, errForged, "RecodePiecesWithVerify must reject forged piece commitments")
+	require.Nil(t, recodedForged)
+}
+

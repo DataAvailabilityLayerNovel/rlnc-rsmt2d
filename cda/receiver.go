@@ -88,12 +88,17 @@ func (m *RecipientManager) RecodePieces(pieces []ReceivedPiece) (*ReceivedPiece,
 
 // RecodePiecesWithVerify tạo ra mảnh recode mới và kiểm tra chống tràn số với cam kết cột (tải từ pieceCommits).
 // Nếu phát hiện tràn số hoặc lỗi recode, tự động sinh bộ hệ số beta ngẫu nhiên mới và thử lại tối đa maxAttempts lần.
-func (m *RecipientManager) RecodePiecesWithVerify(pieces []ReceivedPiece, pieceCommits [][]byte, maxAttempts int) (*ReceivedPiece, error) {
+func (m *RecipientManager) RecodePiecesWithVerify(pieces []ReceivedPiece, pieceCommits [][]byte, maxAttempts int, domainSizes ...int) (*ReceivedPiece, error) {
 	if len(pieces) == 0 {
 		return nil, fmt.Errorf("không có dữ liệu để recode")
 	}
 	if maxAttempts <= 0 {
 		maxAttempts = 5
+	}
+
+	domainSize := 0
+	if len(domainSizes) > 0 && domainSizes[0] > 0 {
+		domainSize = domainSizes[0]
 	}
 
 	var lastErr error
@@ -129,6 +134,32 @@ func (m *RecipientManager) RecodePiecesWithVerify(pieces []ReceivedPiece, pieceC
 		if overflow {
 			lastErr = fmt.Errorf("recode coefficient overflow detected on attempt %d", attempt)
 			continue
+		}
+
+		// 2. Tự xác thực mật mã học (Self-Verification Guard):
+		// Nếu pieceCommits được cung cấp (tối thiểu kPiece mảnh), tổ hợp cam kết C_piece = sum(g_j * C_j)
+		// và thực hiện KZG pairing check để đảm bảo mảnh recode và proof mới khớp 100% về mặt toán học.
+		if len(pieceCommits) >= m.k && m.kzg != nil {
+			pieceCommitsTyped := make([]PieceCommitment, len(pieceCommits))
+			for i, pc := range pieceCommits {
+				pieceCommitsTyped[i] = PieceCommitment(pc)
+			}
+			combinedCommit, err := m.kzg.Combine(pieceCommitsTyped, recoded.Data.Coeffs)
+			if err != nil {
+				lastErr = fmt.Errorf("failed to combine piece commitments on attempt %d: %w", attempt, err)
+				continue
+			}
+
+			var valid bool
+			if domainSize > 0 {
+				valid = m.kzg.VerifyForDomain(combinedCommit, recoded.Row, recoded.Data.Data, recoded.Proof, domainSize)
+			} else {
+				valid = m.kzg.Verify(combinedCommit, recoded.Row, recoded.Data.Data, recoded.Proof)
+			}
+			if !valid {
+				lastErr = fmt.Errorf("recoded piece failed self-verification pairing check on attempt %d (row=%d, domain=%d)", attempt, recoded.Row, domainSize)
+				continue
+			}
 		}
 
 		return recoded, nil
