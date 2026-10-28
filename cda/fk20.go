@@ -106,83 +106,150 @@ func (e *FK20Engine) GetEvaluationPoint(row int) fr.Element {
 	return point
 }
 
+// ComputeMultiPolyProofs computes all n opening proofs for M polynomials simultaneously in O(M * n log n).
+// It leverages Multi-Polynomial Batching on CPU:
+// 1. Parallelizes scalar and G1 FFT/IFFT across M polynomials without goroutine contention.
+// 2. Flattens all M * n Jacobian points and converts them to Affine using EXACTLY ONE
+//    global Montgomery simultaneous inversion (BatchJacobianToAffineG1).
+// 3. Serializes all M * n proofs into a contiguous zero-alloc byte arena, eliminating heap churn.
+func (e *FK20Engine) ComputeMultiPolyProofs(polys [][]fr.Element) ([][]OpeningProof, error) {
+	mCount := len(polys)
+	if mCount == 0 {
+		return nil, nil
+	}
+	n := e.size
+
+	for idx, p := range polys {
+		if len(p) == 0 {
+			return nil, fmt.Errorf("empty polynomial at index %d", idx)
+		}
+	}
+
+	numCPU := runtime.NumCPU()
+	if numCPU < 1 {
+		numCPU = 1
+	}
+
+	var invCard fr.Element
+	invCard.SetUint64(uint64(2 * n))
+	invCard.Inverse(&invCard)
+
+	aPaddedAll := make([][]fr.Element, mCount)
+	claimedValuesAll := make([][]fr.Element, mCount)
+
+	// 1. Form A_m, compute scalar FFTs and claimed values for all M polynomials
+	parallelExecute(mCount, func(start, end int) {
+		for m := start; m < end; m++ {
+			poly := polys[m]
+			polyLen := len(poly)
+
+			aPadded := make([]fr.Element, 2*n)
+			for i := 1; i < n && i < polyLen; i++ {
+				aPadded[n-1-i] = poly[i]
+			}
+
+			e.domain2N.FFT(aPadded, fft.DIF)
+			bitReverseScalars(aPadded)
+
+			for k := 0; k < 2*n; k++ {
+				aPadded[k].Mul(&aPadded[k], &invCard)
+			}
+			aPaddedAll[m] = aPadded
+
+			claimedValues := make([]fr.Element, n)
+			copy(claimedValues, poly)
+			e.domainN.FFT(claimedValues, fft.DIF)
+			bitReverseScalars(claimedValues)
+			claimedValuesAll[m] = claimedValues
+		}
+	}, numCPU)
+
+	// 2. Pointwise multiplication: cHat_k = aHat_k * sHatG1_k across ALL M * 2n points
+	// Flat parallelization evenly distributes all scalar multiplications across all CPU cores.
+	cHatG1All := make([][]bls12381.G1Jac, mCount)
+	for m := 0; m < mCount; m++ {
+		cHatG1All[m] = make([]bls12381.G1Jac, 2*n)
+	}
+
+	totalScalarMuls := mCount * 2 * n
+	parallelExecute(totalScalarMuls, func(start, end int) {
+		bInt := new(big.Int)
+		for idx := start; idx < end; idx++ {
+			m := idx / (2 * n)
+			k := idx % (2 * n)
+			aPaddedAll[m][k].BigInt(bInt)
+			cHatG1All[m][k].ScalarMultiplication(&e.sHatG1[k], bInt)
+		}
+	}, numCPU)
+
+	// 3. IFFT_{2n} and FFT_n for all M polynomials in parallel
+	hG1All := make([][]bls12381.G1Jac, mCount)
+	var fftWg sync.WaitGroup
+	for m := 0; m < mCount; m++ {
+		fftWg.Add(1)
+		go func(polyIdx int) {
+			defer fftWg.Done()
+			difFFTG1(cHatG1All[polyIdx], e.twiddlesInv2N, 0, e.maxSplits2N, nil)
+			bitReverseG1(cHatG1All[polyIdx])
+
+			hG1 := make([]bls12381.G1Jac, n)
+			for i := 0; i <= n-2; i++ {
+				hG1[i] = cHatG1All[polyIdx][n-2-i]
+			}
+
+			difFFTG1(hG1, e.twiddlesN, 0, e.maxSplitsN, nil)
+			bitReverseG1(hG1)
+			hG1All[polyIdx] = hG1
+		}(m)
+	}
+	fftWg.Wait()
+
+	// 4. Flatten all M * n Jacobian points into a single slice for 1 global Montgomery inversion
+	totalPoints := mCount * n
+	allJac := make([]bls12381.G1Jac, totalPoints)
+	for m := 0; m < mCount; m++ {
+		copy(allJac[m*n:(m+1)*n], hG1All[m])
+	}
+
+	// Exactly 1 field inversion in Fp across all M * n points
+	allAff := bls12381.BatchJacobianToAffineG1(allJac)
+
+	// 5. Contiguous Zero-Alloc Memory Arena serialization
+	const proofByteSize = 128
+	arena := make([]byte, totalPoints*proofByteSize)
+	result := make([][]OpeningProof, mCount)
+	for m := 0; m < mCount; m++ {
+		result[m] = make([]OpeningProof, n)
+	}
+
+	parallelExecute(totalPoints, func(start, end int) {
+		for idx := start; idx < end; idx++ {
+			m := idx / n
+			i := idx % n
+			offset := idx * proofByteSize
+
+			op := kzg.OpeningProof{
+				H:            allAff[idx],
+				ClaimedValue: claimedValuesAll[m][i],
+			}
+			buf := bytes.NewBuffer(arena[offset:offset : offset+proofByteSize])
+			_, _ = op.WriteTo(buf)
+			result[m][i] = OpeningProof(arena[offset : offset+proofByteSize])
+		}
+	}, numCPU)
+
+	return result, nil
+}
+
 // ComputeAllProofs computes all n opening proofs for polynomial poly in O(n log n).
 // poly is given in coefficient form [a_0, a_1, ..., a_{n-1}].
 // The returned proofs correspond to evaluation points omega^0, omega^1, ..., omega^{n-1}.
 func (e *FK20Engine) ComputeAllProofs(poly []fr.Element) ([]OpeningProof, error) {
-	n := e.size
-	polyLen := len(poly)
-	if polyLen == 0 {
-		return nil, fmt.Errorf("empty polynomial")
+	res, err := e.ComputeMultiPolyProofs([][]fr.Element{poly})
+	if err != nil {
+		return nil, err
 	}
-
-	// 1. Form A = [a_{n-1}, a_{n-2}, ..., a_1, 0, ..., 0] of length 2n
-	aPadded := make([]fr.Element, 2*n)
-	for i := 1; i < n && i < polyLen; i++ {
-		aPadded[n-1-i] = poly[i]
-	}
-
-	// 2. Compute aHat = FFT_{2n}(A) in scalar field
-	e.domain2N.FFT(aPadded, fft.DIF)
-	bitReverseScalars(aPadded)
-
-	// Pre-scale aPadded by 1/(2n) in Fr to avoid 2n G1 Jacobian scalar multiplications later
-	var invCard fr.Element
-	invCard.SetUint64(uint64(2 * n))
-	invCard.Inverse(&invCard)
-	for k := 0; k < 2*n; k++ {
-		aPadded[k].Mul(&aPadded[k], &invCard)
-	}
-
-	// 3. Pointwise multiplication: cHat_k = aHat_k * sHatG1_k
-	cHatG1 := make([]bls12381.G1Jac, 2*n)
-	numCPU := runtime.NumCPU()
-	parallelExecute(2*n, func(start, end int) {
-		bInt := new(big.Int)
-		for k := start; k < end; k++ {
-			aPadded[k].BigInt(bInt)
-			cHatG1[k].ScalarMultiplication(&e.sHatG1[k], bInt)
-		}
-	}, numCPU)
-
-	// 4. IFFT_{2n} on cHatG1 to get C
-	difFFTG1(cHatG1, e.twiddlesInv2N, 0, e.maxSplits2N, nil)
-	bitReverseG1(cHatG1)
-
-	// 5. Extract h_i = C_{n-2-i} for i = 0 ... n-2, and h_{n-1} = 0
-	hG1 := make([]bls12381.G1Jac, n)
-	for i := 0; i <= n-2; i++ {
-		hG1[i] = cHatG1[n-2-i]
-	}
-	// hG1[n-1] is point at infinity (0)
-
-	// 6. Compute proofs = FFT_n(hG1)
-	difFFTG1(hG1, e.twiddlesN, 0, e.maxSplitsN, nil)
-	bitReverseG1(hG1)
-
-	// Convert Jacobian points to canonical Affine using Montgomery batch inversion (1 inversion!)
-	affPoints := bls12381.BatchJacobianToAffineG1(hG1)
-
-	// Compute all claimed values P(omega^i) using single scalar FFT in O(n log n)
-	claimedValues := make([]fr.Element, n)
-	copy(claimedValues, poly)
-	e.domainN.FFT(claimedValues, fft.DIF)
-	bitReverseScalars(claimedValues)
-
-	proofs := make([]OpeningProof, n)
-	for i := 0; i < n; i++ {
-		op := kzg.OpeningProof{
-			H:            affPoints[i],
-			ClaimedValue: claimedValues[i],
-		}
-		var buf bytes.Buffer
-		if _, err := op.WriteTo(&buf); err != nil {
-			return nil, err
-		}
-		proofs[i] = OpeningProof(buf.Bytes())
-	}
-
-	return proofs, nil
+	return res[0], nil
 }
 
 // evalPoly evaluates polynomial poly at point z: P(z) = sum a_i * z^i using Horner's method.

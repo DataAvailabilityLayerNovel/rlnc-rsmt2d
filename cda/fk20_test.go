@@ -167,4 +167,87 @@ func TestMultiDomainVerification(t *testing.T) {
 	require.True(t, okBatch, "BatchVerifyForDomain failed for domain size %d", nSmall)
 }
 
+func TestFK20_MultiPolyBatching(t *testing.T) {
+	n := 128
+	mCount := 16 // 16 polynomials (e.g. 16 columns or 4 columns x 4 pieces)
 
+	srs, err := bls12381kzg.NewSRS(uint64(2*n), big.NewInt(-1))
+	require.NoError(t, err)
+
+	gnarkKZG := NewGnarkKZG(*srs)
+	fk20, err := NewFK20Engine(gnarkKZG, n)
+	require.NoError(t, err)
+
+	polys := make([][]fr.Element, mCount)
+	for m := 0; m < mCount; m++ {
+		polys[m] = make([]fr.Element, n)
+		for i := 0; i < n; i++ {
+			polys[m][i].SetRandom()
+		}
+	}
+
+	// 1. Compute multi-poly batch proofs
+	startBatch := time.Now()
+	batchProofs, err := fk20.ComputeMultiPolyProofs(polys)
+	batchDur := time.Since(startBatch)
+	require.NoError(t, err)
+	require.Len(t, batchProofs, mCount)
+
+	// 2. Compute individual proofs via ComputeAllProofs and compare
+	startIndiv := time.Now()
+	for m := 0; m < mCount; m++ {
+		indivProofs, err := fk20.ComputeAllProofs(polys[m])
+		require.NoError(t, err)
+		require.Len(t, indivProofs, n)
+
+		for i := 0; i < n; i++ {
+			// Compare byte representation of opening proof
+			assert.Equal(t, []byte(indivProofs[i]), []byte(batchProofs[m][i]),
+				"Proof mismatch at poly %d row %d", m, i)
+		}
+	}
+	indivDur := time.Since(startIndiv)
+
+	t.Logf("MultiPolyBatching [%d polys x %d rows]: Batch %v vs Indiv %v (%.2fx speedup)",
+		mCount, n, batchDur, indivDur, float64(indivDur)/float64(batchDur))
+}
+
+func BenchmarkFK20_MultiPolyBatching_Size128(b *testing.B) {
+	const n = 128
+	const mCount = 16 // 16 polynomials
+
+	srs, err := bls12381kzg.NewSRS(uint64(2*n), big.NewInt(-1))
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	gnarkKZG := NewGnarkKZG(*srs)
+	fk20, err := NewFK20Engine(gnarkKZG, n)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	polys := make([][]fr.Element, mCount)
+	for m := 0; m < mCount; m++ {
+		polys[m] = make([]fr.Element, n)
+		for i := 0; i < n; i++ {
+			polys[m][i].SetRandom()
+		}
+	}
+
+	b.Run("Batched_16_Polys", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, _ = fk20.ComputeMultiPolyProofs(polys)
+		}
+	})
+
+	b.Run("Sequential_16_Polys", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			for m := 0; m < mCount; m++ {
+				_, _ = fk20.ComputeAllProofs(polys[m])
+			}
+		}
+	})
+}
