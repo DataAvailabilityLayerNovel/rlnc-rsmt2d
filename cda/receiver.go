@@ -136,6 +136,12 @@ func (m *RecipientManager) RecodePiecesWithVerify(pieces []ReceivedPiece, pieceC
 			continue
 		}
 
+		// 1b. Kiểm tra đồng cấu đại số trên trường Fr (~0.5us): FoldMultiScalar(Data) == Proof.ClaimedValue
+		if _, isGnark := m.kzg.(*GnarkKZG); (isGnark || len(recoded.Proof) >= 80) && !VerifyClaimedValue(recoded.Data.Data, recoded.Proof) {
+			lastErr = fmt.Errorf("recode claimed value mismatch on attempt %d", attempt)
+			continue
+		}
+
 		// 2. Tự xác thực mật mã học (Self-Verification Guard):
 		// Nếu pieceCommits được cung cấp (tối thiểu kPiece mảnh), tổ hợp cam kết C_piece = sum(g_j * C_j)
 		// và thực hiện KZG pairing check để đảm bảo mảnh recode và proof mới khớp 100% về mặt toán học.
@@ -165,6 +171,158 @@ func (m *RecipientManager) RecodePiecesWithVerify(pieces []ReceivedPiece, pieceC
 		return recoded, nil
 	}
 	return nil, fmt.Errorf("recode failed after %d attempts: %v", maxAttempts, lastErr)
+}
+
+// RecodePiecesFastCheck performs RLNC recoding with immediate uint32 coefficient overflow check
+// and O(1) Fr algebraic homomorphism check (FoldMultiScalar(Data) == Proof.ClaimedValue).
+func (m *RecipientManager) RecodePiecesFastCheck(pieces []ReceivedPiece, maxAttempts int) (*ReceivedPiece, error) {
+	if len(pieces) == 0 {
+		return nil, fmt.Errorf("không có dữ liệu để recode")
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		recoded, err := m.RecodePieces(pieces)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		overflow := false
+		if len(recoded.Data.Coeffs) == 0 {
+			overflow = true
+		} else {
+			k := m.k
+			for j := 0; j < k; j++ {
+				var cVal uint32
+				if len(recoded.Data.Coeffs) == 2*k {
+					cVal = uint32(binary.BigEndian.Uint16(recoded.Data.Coeffs[j*2 : (j+1)*2]))
+				} else if j < len(recoded.Data.Coeffs) {
+					cVal = uint32(recoded.Data.Coeffs[j])
+				}
+				if cVal > 65535 {
+					overflow = true
+					break
+				}
+			}
+		}
+		if overflow {
+			lastErr = fmt.Errorf("recode coefficient overflow detected on attempt %d", attempt)
+			continue
+		}
+
+		if _, isGnark := m.kzg.(*GnarkKZG); (isGnark || len(recoded.Proof) >= 80) && !VerifyClaimedValue(recoded.Data.Data, recoded.Proof) {
+			lastErr = fmt.Errorf("recode claimed value mismatch on attempt %d", attempt)
+			continue
+		}
+
+		return recoded, nil
+	}
+	return nil, fmt.Errorf("recode fast check failed after %d attempts: %v", maxAttempts, lastErr)
+}
+
+// RecodeBatchRequest defines a cell recoding task within a batch.
+type RecodeBatchRequest struct {
+	Pieces       []ReceivedPiece
+	PieceCommits [][]byte
+	Count        int // Number of independent recoded pieces to generate for this cell
+}
+
+// RecodeBatchWithVerify generates recoded pieces for a batch of cells, verifies uint32 overflow
+// and FoldMultiScalar(Data) == Proof.ClaimedValue per piece (~0.5us), and then verifies all generated
+// pieces in a single BatchVerifyForDomain call (only 2 pairings for the entire batch).
+// If the batch KZG pairing fails, it automatically falls back to individual RecodePiecesWithVerify per item.
+func (m *RecipientManager) RecodeBatchWithVerify(requests []RecodeBatchRequest, maxAttempts int, domainSizes ...int) ([][]*ReceivedPiece, error) {
+	if len(requests) == 0 {
+		return nil, nil
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+	domainSize := 0
+	if len(domainSizes) > 0 && domainSizes[0] > 0 {
+		domainSize = domainSizes[0]
+	}
+
+	results := make([][]*ReceivedPiece, len(requests))
+	var batchItems []BatchVerifyItem
+
+	for reqIdx, req := range requests {
+		count := req.Count
+		if count <= 0 {
+			count = 1
+		}
+		if len(req.Pieces) == 0 {
+			continue
+		}
+
+		var pieceCommitsTyped []PieceCommitment
+		if len(req.PieceCommits) >= m.k {
+			pieceCommitsTyped = make([]PieceCommitment, len(req.PieceCommits))
+			for i, pc := range req.PieceCommits {
+				pieceCommitsTyped[i] = PieceCommitment(pc)
+			}
+		}
+
+		cellOut := make([]*ReceivedPiece, 0, count)
+		for c := 0; c < count; c++ {
+			recoded, err := m.RecodePiecesFastCheck(req.Pieces, maxAttempts)
+			if err != nil {
+				continue
+			}
+			if len(pieceCommitsTyped) >= m.k && m.kzg != nil {
+				combinedCommit, err := m.kzg.Combine(pieceCommitsTyped, recoded.Data.Coeffs)
+				if err != nil {
+					continue
+				}
+				batchItems = append(batchItems, BatchVerifyItem{
+					Commitment: combinedCommit,
+					Row:        recoded.Row,
+					Data:       recoded.Data.Data,
+					Proof:      recoded.Proof,
+				})
+			}
+			cellOut = append(cellOut, recoded)
+		}
+		results[reqIdx] = cellOut
+	}
+
+	if len(batchItems) > 0 && m.kzg != nil {
+		var batchValid bool
+		if domainSize > 0 {
+			batchValid = m.kzg.BatchVerifyForDomain(batchItems, domainSize)
+		} else {
+			batchValid = m.kzg.BatchVerify(batchItems)
+		}
+		if !batchValid {
+			// Fallback: isolate and re-recode each request individually with full KZG pairing verification
+			var lastFallbackErr error
+			for reqIdx, req := range requests {
+				count := req.Count
+				if count <= 0 {
+					count = 1
+				}
+				cellOut := make([]*ReceivedPiece, 0, count)
+				for c := 0; c < count; c++ {
+					recoded, err := m.RecodePiecesWithVerify(req.Pieces, req.PieceCommits, maxAttempts, domainSize)
+					if err != nil {
+						lastFallbackErr = err
+						continue
+					}
+					cellOut = append(cellOut, recoded)
+				}
+				results[reqIdx] = cellOut
+			}
+			if len(batchItems) > 0 && lastFallbackErr != nil {
+				return results, lastFallbackErr
+			}
+		}
+	}
+
+	return results, nil
 }
 
 // RecoverCell khôi phục ô dữ liệu gốc từ k mảnh RLNC

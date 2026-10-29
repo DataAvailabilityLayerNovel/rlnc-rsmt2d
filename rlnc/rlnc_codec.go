@@ -227,14 +227,57 @@ func (c *RLNCCodec) RecodeWithBetaFr(pieces []PieceData) (PieceData, []byte, err
 		}
 	}
 
-	var idxA, idxB int
-	var betaA, betaB uint16
-	found := false
-
 	numCandidates := 4
 	if numCandidates > n {
 		numCandidates = n
 	}
+
+	// Fast full-rank mixing when input pieces have small coefficients (e.g. Bootstrap seeds <= 1000):
+	// Combine all numCandidates pieces with random beta_m in [1..12] so every recoded piece spans
+	// all available pieces and consecutive recodes are linearly independent with near-100% probability.
+	if numCandidates >= 2 && scores[numCandidates-1].maxCoeff <= 2500 {
+		for attempt := 0; attempt < 25; attempt++ {
+			beta := make([]uint16, n)
+			for m := 0; m < numCandidates; m++ {
+				beta[scores[m].idx] = uint16(randInt(12) + 1)
+			}
+			overflow := false
+			newGlobalCoeffs := make([]byte, 2*k)
+			for j := 0; j < k; j++ {
+				var sum uint32
+				for m := 0; m < numCandidates; m++ {
+					idx := scores[m].idx
+					var cVal uint32
+					if len(pieces[idx].Coeffs) == 2*k {
+						cVal = uint32(binary.BigEndian.Uint16(pieces[idx].Coeffs[j*2 : (j+1)*2]))
+					} else {
+						cVal = uint32(pieces[idx].Coeffs[j])
+					}
+					sum += uint32(beta[idx]) * cVal
+				}
+				if sum > 65535 {
+					overflow = true
+					break
+				}
+				binary.BigEndian.PutUint16(newGlobalCoeffs[j*2:], uint16(sum))
+			}
+			if !overflow {
+				betaBytes := make([]byte, 2*n)
+				newPiece := make([]byte, shareSize)
+				for i := 0; i < n; i++ {
+					binary.BigEndian.PutUint16(betaBytes[i*2:], beta[i])
+					if beta[i] > 0 {
+						VectorMulAddFr(newPiece, pieces[i].Data, beta[i])
+					}
+				}
+				return PieceData{Data: newPiece, Coeffs: newGlobalCoeffs}, betaBytes, nil
+			}
+		}
+	}
+
+	var idxA, idxB int
+	var betaA, betaB uint16
+	found := false
 
 	for attempt := 0; attempt < 50; attempt++ {
 		i1 := randInt(numCandidates)
@@ -245,8 +288,8 @@ func (c *RLNCCodec) RecodeWithBetaFr(pieces []PieceData) (PieceData, []byte, err
 		candA := scores[i1].idx
 		candB := scores[i2].idx
 
-		bA := uint16(randInt(3) + 1)
-		bB := uint16(randInt(3) + 1)
+		bA := uint16(randInt(5) + 1)
+		bB := uint16(randInt(5) + 1)
 
 		overflow := false
 		for j := 0; j < k; j++ {

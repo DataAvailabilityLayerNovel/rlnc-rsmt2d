@@ -516,5 +516,33 @@ func TestRecodePiecesWithVerify_SelfVerificationGuard(t *testing.T) {
 	recodedForged, errForged := rm.RecodePiecesWithVerify(rawPieces[:2], forgedCommits, 5)
 	require.Error(t, errForged, "RecodePiecesWithVerify must reject forged piece commitments")
 	require.Nil(t, recodedForged)
-}
 
+	// 4. Batch recoding with RecodeBatchWithVerify (honest batch + fallback on corrupted item)
+	batchReqs := []RecodeBatchRequest{
+		{Pieces: rawPieces[:2], PieceCommits: pieceCommits, Count: 3},
+		{Pieces: rawPieces[1:3], PieceCommits: pieceCommits, Count: 2},
+	}
+	batchOut, errBatch := rm.RecodeBatchWithVerify(batchReqs, 5)
+	require.NoError(t, errBatch)
+	require.Len(t, batchOut, 2)
+	require.Len(t, batchOut[0], 3)
+	require.Len(t, batchOut[1], 2)
+	for _, grp := range batchOut {
+		for _, p := range grp {
+			require.NotNil(t, p)
+			cComm, err := kzgProvider.Combine(pcSlice, p.Data.Coeffs)
+			require.NoError(t, err)
+			require.True(t, kzgProvider.Verify(cComm, rowIdx, p.Data.Data, p.Proof))
+		}
+	}
+
+	// Mixed batch: 1st request honest, 2nd request has forged commitments (triggers individual fallback)
+	mixedReqs := []RecodeBatchRequest{
+		{Pieces: rawPieces[:2], PieceCommits: pieceCommits, Count: 2},
+		{Pieces: rawPieces[:2], PieceCommits: forgedCommits, Count: 2},
+	}
+	mixedOut, _ := rm.RecodeBatchWithVerify(mixedReqs, 5)
+	require.Len(t, mixedOut, 2)
+	require.Len(t, mixedOut[0], 2, "Honest request in mixed batch must still succeed via fallback")
+	require.Empty(t, mixedOut[1], "Forged request in mixed batch must be rejected")
+}

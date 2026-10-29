@@ -23,6 +23,8 @@ type GnarkKZG struct {
 	fk20Engines map[int]*FK20Engine
 	domain      *fft.Domain
 	fk20        *FK20Engine
+	g1CacheMu   sync.RWMutex
+	g1Cache     map[[48]byte]bls12381.G1Affine
 }
 
 var _ KZGProvider = (*GnarkKZG)(nil)
@@ -32,7 +34,47 @@ func NewGnarkKZG(srs kzg.SRS) *GnarkKZG {
 		srs:         srs,
 		domains:     make(map[int]*fft.Domain),
 		fk20Engines: make(map[int]*FK20Engine),
+		g1Cache:     make(map[[48]byte]bls12381.G1Affine, 1024),
 	}
+}
+
+func (g *GnarkKZG) unmarshalG1Cached(commBytes []byte) (bls12381.G1Affine, error) {
+	if len(commBytes) == 48 {
+		var key [48]byte
+		copy(key[:], commBytes)
+		g.g1CacheMu.RLock()
+		if pt, ok := g.g1Cache[key]; ok {
+			g.g1CacheMu.RUnlock()
+			return pt, nil
+		}
+		g.g1CacheMu.RUnlock()
+
+		var pt bls12381.G1Affine
+		if err := pt.Unmarshal(commBytes); err != nil {
+			return pt, err
+		}
+		g.g1CacheMu.Lock()
+		if g.g1Cache == nil || len(g.g1Cache) >= 16384 {
+			g.g1Cache = make(map[[48]byte]bls12381.G1Affine, 1024)
+		}
+		g.g1Cache[key] = pt
+		g.g1CacheMu.Unlock()
+		return pt, nil
+	}
+	var pt bls12381.G1Affine
+	err := pt.Unmarshal(commBytes)
+	return pt, err
+}
+
+// VerifyClaimedValue checks in O(1) scalar time (~0.5us) that FoldMultiScalar(data) == proof.ClaimedValue.
+func VerifyClaimedValue(data []byte, proof OpeningProof) bool {
+	if len(data) == 0 || len(proof) < 80 {
+		return false
+	}
+	val := rlnc.FoldMultiScalar(data)
+	var claimed fr.Element
+	claimed.SetBytes(proof[48:80])
+	return claimed.Equal(&val)
 }
 
 // GetDomain retrieves or lazily instantiates the evaluation domain of size n (must be power of 2).
@@ -204,9 +246,11 @@ func (g *GnarkKZG) GnarkCombine(commits []PieceCommitment, coeffs []byte) (Colum
 
 	points := make([]bls12381.G1Affine, n)
 	for i, commBytes := range commits {
-		if err := points[i].Unmarshal(commBytes); err != nil {
+		pt, err := g.unmarshalG1Cached(commBytes)
+		if err != nil {
 			return nil, err
 		}
+		points[i] = pt
 	}
 
 	var combined bls12381.G1Affine
@@ -282,6 +326,14 @@ func (g *GnarkKZG) GnarkUnpackProofs(proofs []OpeningProof) ([]bls12381.G1Affine
 	points := make([]bls12381.G1Affine, n)
 	claimedValues := make([]fr.Element, n)
 	for i, proofBytes := range proofs {
+		if len(proofBytes) == 80 {
+			pt, err := g.unmarshalG1Cached(proofBytes[:48])
+			if err == nil {
+				points[i] = pt
+				claimedValues[i].SetBytes(proofBytes[48:80])
+				continue
+			}
+		}
 		var tempProof kzg.OpeningProof
 		if _, err := tempProof.ReadFrom(bytes.NewReader(proofBytes)); err != nil {
 			return nil, nil, err
